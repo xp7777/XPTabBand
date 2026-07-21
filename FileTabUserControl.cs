@@ -200,7 +200,8 @@ public sealed class FileTabUserControl : UserControl
         _toolbar.Controls.Add(_searchBox);
 
         // ===== 文件列表 =====
-        _smallIcons = new ImageList { ImageSize = new Size(16, 16), ColorDepth = ColorDepth.Depth32Bit };
+        // SmallImageList 的高度同时决定 ListView 的行高，设为 24 为磁盘进度条留出空间
+        _smallIcons = new ImageList { ImageSize = new Size(16, 24), ColorDepth = ColorDepth.Depth32Bit };
         _largeIcons = new ImageList { ImageSize = new Size(48, 48), ColorDepth = ColorDepth.Depth32Bit };
 
         _listView = new ListView
@@ -280,8 +281,8 @@ public sealed class FileTabUserControl : UserControl
     {
         _listView.Columns.Add("名称", 300);
         _listView.Columns.Add("修改日期", 150);
-        _listView.Columns.Add("类型", 120);
-        _listView.Columns.Add("大小", 100);
+        _listView.Columns.Add("类型", 140);
+        _listView.Columns.Add("大小", 160);
     }
 
     private Button CreateToolButton(string text, string tooltip)
@@ -333,9 +334,28 @@ public sealed class FileTabUserControl : UserControl
                     Tag = new DirectoryInfo(drive.RootDirectory.FullName),
                     ImageKey = "drive"
                 };
-                item.SubItems.Add("");
-                item.SubItems.Add("本地磁盘");
-                try { item.SubItems.Add($"{drive.TotalSize / 1024.0 / 1024 / 1024:F0} GB"); }
+                item.SubItems.Add(""); // 修改日期留空
+                // 类型列：磁盘类型 + 文件系统
+                string typeText = drive.DriveType switch
+                {
+                    DriveType.Fixed => "本地磁盘",
+                    DriveType.Removable => "可移动磁盘",
+                    DriveType.Network => "网络磁盘",
+                    DriveType.CDRom => "光驱",
+                    _ => drive.DriveType.ToString()
+                };
+                if (!string.IsNullOrEmpty(drive.DriveFormat))
+                    typeText += $" ({drive.DriveFormat})";
+                item.SubItems.Add(typeText);
+                // 大小列：剩余空间 / 总容量，并存比例用于画进度条
+                try
+                {
+                    double totalGb = drive.TotalSize / 1024.0 / 1024 / 1024;
+                    double freeGb = drive.AvailableFreeSpace / 1024.0 / 1024 / 1024;
+                    item.SubItems.Add($"{freeGb:F0} GB 可用 / {totalGb:F0} GB");
+                    // 把使用比例存到 Name（利用不常用的字段），用于自绘进度条
+                    item.Name = (1.0 - freeGb / totalGb).ToString("F3");
+                }
                 catch { item.SubItems.Add(""); }
                 _listView.Items.Add(item);
             }
@@ -909,8 +929,18 @@ public sealed class FileTabUserControl : UserControl
                 // 修改日期/类型/大小列
                 Color fg = selected ? Color.White : Theme.FgSecondary;
                 var textRect = new Rectangle(cellBounds.X + 4, cellBounds.Y, cellBounds.Width - 8, cellBounds.Height);
-                using var bc = new SolidBrush(fg);
-                e.Graphics.DrawString(text, font, bc, textRect, sf);
+
+                // 磁盘项的大小列：画进度条 + 文字
+                bool isDrive = item.ImageKey == "drive" && col == _listView.Columns.Count - 1;
+                if (isDrive && double.TryParse(item.Name, out double usedRatio))
+                {
+                    DrawDriveUsageBar(e.Graphics, cellBounds, text, usedRatio, selected, font, sf, fg);
+                }
+                else
+                {
+                    using var bc = new SolidBrush(fg);
+                    e.Graphics.DrawString(text, font, bc, textRect, sf);
+                }
             }
         }
 
@@ -921,6 +951,42 @@ public sealed class FileTabUserControl : UserControl
     {
         // 所有绘制已在 DrawListItem 中完成，禁用默认绘制避免覆盖
         e.DrawDefault = false;
+    }
+
+    /// <summary>
+    /// 绘制磁盘空间使用进度条 + 文字
+    /// </summary>
+    private static void DrawDriveUsageBar(Graphics g, Rectangle cellBounds, string text,
+        double usedRatio, bool selected, Font font, StringFormat sf, Color textColor)
+    {
+        // 进度条区域：上半部分画条，下半部分画文字
+        int barHeight = 8;
+        int textHeight = 14;
+        int barY = cellBounds.Y + (cellBounds.Height - barHeight - textHeight) / 2;
+        var barRect = new Rectangle(cellBounds.X + 4, barY, cellBounds.Width - 8, barHeight);
+
+        // 进度条背景（槽）
+        using (var b = new SolidBrush(Color.FromArgb(60, 60, 65)))
+        using (var path = GetRoundedRectPath(barRect, 3))
+            g.FillPath(b, path);
+
+        // 已用部分填充：使用率低用绿色，中等用黄色，高用红色
+        Color fill = usedRatio < 0.7 ? Color.FromArgb(80, 180, 80)
+                    : usedRatio < 0.9 ? Color.FromArgb(220, 180, 60)
+                    : Color.FromArgb(232, 80, 80);
+        int fillWidth = (int)((barRect.Width - 2) * Math.Clamp(usedRatio, 0, 1));
+        if (fillWidth > 0)
+        {
+            var fillRect = new Rectangle(barRect.X + 1, barRect.Y + 1, fillWidth, barRect.Height - 2);
+            using var b2 = new SolidBrush(fill);
+            using var path2 = GetRoundedRectPath(fillRect, 2);
+            g.FillPath(b2, path2);
+        }
+
+        // 文字（容量信息）画在进度条下方
+        var textRect = new Rectangle(cellBounds.X + 4, barY + barHeight + 1, cellBounds.Width - 8, textHeight);
+        using var tb = new SolidBrush(textColor);
+        g.DrawString(text, font, tb, textRect, sf);
     }
 
     private void DrawColumnHeader(DrawListViewColumnHeaderEventArgs e)
