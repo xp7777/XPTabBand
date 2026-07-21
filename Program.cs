@@ -1,3 +1,4 @@
+using System.IO;
 using System.Runtime.InteropServices;
 
 namespace FileExplorerPro;
@@ -10,10 +11,17 @@ internal static class Program
     [STAThread]
     private static void Main()
     {
+        // 清空旧日志
+        try { File.Delete(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "log.txt")); }
+        catch { }
+        DebugLog.Log("程序启动");
+
         ApplicationConfiguration.Initialize();
 
         var settings = AppSettings.Load();
+        DebugLog.Log($"StartupPath={settings.StartupPath}");
         Application.Run(new MainForm(settings));
+        DebugLog.Log("程序退出");
     }
 
     /// <summary>

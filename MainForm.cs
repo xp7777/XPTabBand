@@ -1,4 +1,4 @@
-﻿using System.Drawing;
+using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Windows.Forms;
 
@@ -116,7 +116,11 @@ public sealed class MainForm : Form
         {
             Dock = DockStyle.Fill
         };
-        _tabControl.NewTabRequested += (_, _) => AddNewTab("");
+        _tabControl.NewTabRequested += (_, _) =>
+        {
+            DebugLog.Log("[MainForm] NewTabRequested 事件触发，调用 AddNewTabFromPicker");
+            AddNewTabFromPicker();
+        };
         _tabControl.TabCloseRequested += (_, idx) => CloseTab(idx);
         _tabControl.SelectedIndexChanged += (_, _) => OnTabChanged();
         rightPanel.Controls.Add(_tabControl);
@@ -168,6 +172,31 @@ public sealed class MainForm : Form
                 ? Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments)
                 : _settings.StartupPath;
             AddNewTab(startup);
+        }
+    }
+
+    /// <summary>
+    /// 点击 + 按钮：弹出文件夹选择对话框，选择后在新标签打开
+    /// </summary>
+    private void AddNewTabFromPicker()
+    {
+        DebugLog.Log("[AddNewTabFromPicker] 进入方法，准备显示 FolderBrowserDialog");
+        using var dlg = new FolderBrowserDialog
+        {
+            Description = "选择要打开的文件夹",
+            ShowNewFolderButton = false
+        };
+        // 默认定位到当前标签所在目录，方便继续浏览
+        if (_tabControl.SelectedTab?.Controls[0] is FileTabUserControl cur
+            && !string.IsNullOrEmpty(cur.CurrentPath) && cur.CurrentPath != "ThisPC")
+        {
+            dlg.SelectedPath = cur.CurrentPath;
+        }
+        var result = dlg.ShowDialog(this);
+        DebugLog.Log($"[AddNewTabFromPicker] 对话框返回={result} SelectedPath={dlg.SelectedPath}");
+        if (result == DialogResult.OK && !string.IsNullOrEmpty(dlg.SelectedPath))
+        {
+            AddNewTab(dlg.SelectedPath);
         }
     }
 

@@ -1,4 +1,4 @@
-﻿using System.Drawing;
+using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Windows.Forms;
 
@@ -16,11 +16,12 @@ public sealed class ModernTabControl : TabControl
     private const int TabPadding = 18;
     private const int TabHeight = 32;
     private const int CloseBtnSize = 14;
-    private const int NewBtnSize = 24;
+    private const int NewBtnSize = 28;
     private const int TabBarPadding = 6;
 
     private readonly Dictionary<int, Rectangle> _closeBtnRects = new();
-    private Rectangle _newBtnRect;
+    private Rectangle _newBtnRect;              // 仅用于光标提示，点击由 _newTabBtn 处理
+    private readonly Button _newTabBtn;          // 独立的 + 按钮控件，保证点击 100% 可靠
     private int _hoverTab = -1;
     private bool _hoverClose;
     private bool _hoverNew;
@@ -43,6 +44,55 @@ public sealed class ModernTabControl : TabControl
         Padding = new Point(TabPadding, 0);
         Font = Theme.GetUiFont(9);
         DoubleBuffered = true;
+
+        // 用真正的 Button 控件作为 + 按钮，Click 事件由框架保证可靠
+        // 不再依赖 WndProc 拦截 / 坐标计算（TabControl 在 UserPaint 下会吞掉 OnMouseDown）
+        _newTabBtn = new Button
+        {
+            Size = new Size(NewBtnSize, NewBtnSize),
+            FlatStyle = FlatStyle.Flat,
+            BackColor = Theme.BgButton,
+            ForeColor = Theme.FgMain,
+            Font = new Font("Microsoft YaHei UI", 13F, FontStyle.Bold),
+            Text = "+",
+            TextAlign = ContentAlignment.MiddleCenter,
+            Cursor = Cursors.Hand,
+            Margin = new Padding(0)
+        };
+        _newTabBtn.FlatAppearance.BorderSize = 0;
+        _newTabBtn.FlatAppearance.MouseOverBackColor = Theme.BgButtonHover;
+        _newTabBtn.Click += (_, _) =>
+        {
+            DebugLog.Log("[+Button.Click] 独立按钮被点击，触发 NewTabRequested");
+            NewTabRequested?.Invoke(this, EventArgs.Empty);
+        };
+        // 注意：TabControl.Controls 只能添加 TabPage，不能直接添加 Button。
+        // 改为在 OnParentChanged 中把按钮托管到父容器，叠在 TabControl 上方。
+    }
+
+    /// <summary>
+    /// 当 TabControl 被加入父容器时，把 + 按钮也挂到同一父容器并置顶。
+    /// 这样按钮不是 TabControl 的子控件（TabControl 只接受 TabPage），而是兄弟控件。
+    /// </summary>
+    protected override void OnParentChanged(EventArgs e)
+    {
+        base.OnParentChanged(e);
+        if (Parent is not null)
+        {
+            if (!Parent.Controls.Contains(_newTabBtn))
+                Parent.Controls.Add(_newTabBtn);
+            _newTabBtn.BringToFront();
+            DebugLog.Log($"[OnParentChanged] +按钮已托管到父容器 {Parent.GetType().Name}");
+        }
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _newTabBtn?.Dispose();
+        }
+        base.Dispose(disposing);
     }
 
     /// <summary>
@@ -73,11 +123,30 @@ public sealed class ModernTabControl : TabControl
             DrawTab(g, i, rect);
         }
 
-        // 新建按钮（+）
+        // 新建按钮（+）：定位独立 Button 控件，不再自绘
         int newX = TabCount > 0 ? GetTabRect(TabCount - 1).Right + 8 : 8;
-        _newBtnRect = new Rectangle(newX, (TabHeight - NewBtnSize) / 2, NewBtnSize, NewBtnSize);
-        DrawNewButton(g);
+        int newY = (TabHeight - NewBtnSize) / 2;
+        _newBtnRect = new Rectangle(newX, newY, NewBtnSize, NewBtnSize);
+        // Button 是父容器的子控件，需把 TabControl 内坐标转换到父容器坐标
+        if (_newTabBtn.Parent is not null)
+        {
+            var parentLoc = _newTabBtn.Parent.PointToClient(PointToScreen(_newBtnRect.Location));
+            if (_newTabBtn.Location != parentLoc)
+            {
+                _newTabBtn.Location = parentLoc;
+                _newTabBtn.BringToFront();
+            }
+        }
+
+        // 位置变化时记录日志
+        if (_lastLoggedNewRect != _newBtnRect)
+        {
+            _lastLoggedNewRect = _newBtnRect;
+            DebugLog.Log($"[OnPaint] +按钮位置(本控件内)={_newBtnRect} Button.Bounds={_newTabBtn.Bounds} TabCount={TabCount}");
+        }
     }
+
+    private Rectangle _lastLoggedNewRect = Rectangle.Empty;
 
     private void DrawTab(Graphics g, int index, Rectangle rect)
     {
@@ -140,26 +209,6 @@ public sealed class ModernTabControl : TabControl
         g.DrawLine(p, rect.Right - pad, rect.Y + pad, rect.X + pad, rect.Bottom - pad);
     }
 
-    private void DrawNewButton(Graphics g)
-    {
-        var rect = _newBtnRect;
-        Color bg = _hoverNew ? Theme.BgButtonHover : Color.Transparent;
-        if (_hoverNew)
-        {
-            using var b = new SolidBrush(bg);
-            using var path = GetRoundedRectPath(rect, 4);
-            g.FillPath(b, path);
-        }
-
-        // + 图标
-        using var p = new Pen(_hoverNew ? Theme.FgMain : Theme.FgSecondary, 1.8f);
-        int cx = rect.X + rect.Width / 2;
-        int cy = rect.Y + rect.Height / 2;
-        int len = 6;
-        g.DrawLine(p, cx - len, cy, cx + len, cy);
-        g.DrawLine(p, cx, cy - len, cx, cy + len);
-    }
-
     private static GraphicsPath GetRoundedRectPath(Rectangle rect, int radius)
     {
         var path = new GraphicsPath();
@@ -202,6 +251,11 @@ public sealed class ModernTabControl : TabControl
         {
             _hoverNew = true;
             Cursor = Cursors.Hand;
+            // 仅在刚进入+按钮区域时记录一次
+            if (!prevHoverNew)
+            {
+                DebugLog.Log($"[OnMouseMove] 进入+按钮区域 鼠标={e.Location} +按钮区域={_newBtnRect}");
+            }
         }
         else if (_hoverTab >= 0 && _hoverClose)
         {
@@ -231,13 +285,6 @@ public sealed class ModernTabControl : TabControl
     protected override void OnMouseClick(MouseEventArgs e)
     {
         base.OnMouseClick(e);
-
-        // 点击新建按钮
-        if (_newBtnRect.Contains(e.Location))
-        {
-            NewTabRequested?.Invoke(this, EventArgs.Empty);
-            return;
-        }
 
         // 点击关闭按钮
         for (int i = 0; i < TabCount; i++)
@@ -303,7 +350,8 @@ public sealed class ModernTabControl : TabControl
         {
             int l = m.LParam.ToInt32();
             var pt = new Point((short)(l & 0xFFFF), (short)(l >> 16));
-            if (_newBtnRect.Contains(pt)) { NewTabRequested?.Invoke(this, EventArgs.Empty); return; }
+
+            // 关闭按钮：在 WndProc 中拦截，避免触发标签切换
             for (int i = 0; i < TabCount; i++)
                 if (_closeBtnRects.TryGetValue(i, out var cr) && cr.Contains(pt)) { TabCloseRequested?.Invoke(this, i); return; }
         }
