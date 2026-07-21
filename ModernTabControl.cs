@@ -28,6 +28,10 @@ public sealed class ModernTabControl : TabControl
 
     public event EventHandler? NewTabRequested;
     public event EventHandler<int>? TabCloseRequested;
+    /// <summary>
+    /// 右键点击标签页时触发，参数为标签索引
+    /// </summary>
+    public event EventHandler<int>? TabContextMenuRequested;
 
     public ModernTabControl()
     {
@@ -306,6 +310,21 @@ public sealed class ModernTabControl : TabControl
                 if (rect.Contains(e.Location))
                 {
                     TabCloseRequested?.Invoke(this, i);
+                    return;
+                }
+            }
+        }
+
+        // 右键点击标签页：请求显示上下文菜单
+        if (e.Button == MouseButtons.Right)
+        {
+            for (int i = 0; i < TabCount; i++)
+            {
+                var rect = GetTabRect(i);
+                rect = new Rectangle(rect.X, 0, rect.Width, TabHeight);
+                if (rect.Contains(e.Location))
+                {
+                    TabContextMenuRequested?.Invoke(this, i);
                     return;
                 }
             }

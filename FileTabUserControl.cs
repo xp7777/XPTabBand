@@ -523,7 +523,9 @@ public sealed class FileTabUserControl : UserControl
         _backStack.RemoveAt(_backStack.Count - 1);
         if (!string.IsNullOrEmpty(_currentPath)) _forwardStack.Add(_currentPath);
         _currentPath = "";
-        LoadDirectory(prev == "ThisPC" ? prev : prev);
+        // 后退到"此电脑"需加载驱动器列表，否则按目录加载
+        if (prev == "ThisPC") NavigateToThisPC();
+        else LoadDirectory(prev);
         _currentPath = prev;
         UpdateCrumbs(prev);
         UpdateStatusBar();
@@ -537,7 +539,9 @@ public sealed class FileTabUserControl : UserControl
         _forwardStack.RemoveAt(_forwardStack.Count - 1);
         if (!string.IsNullOrEmpty(_currentPath)) _backStack.Add(_currentPath);
         _currentPath = "";
-        LoadDirectory(next);
+        // 前进到"此电脑"需加载驱动器列表，否则按目录加载
+        if (next == "ThisPC") NavigateToThisPC();
+        else LoadDirectory(next);
         _currentPath = next;
         UpdateCrumbs(next);
         UpdateStatusBar();

@@ -81,14 +81,15 @@ public sealed class MainForm : Form
         _favoritesTree.DrawNode += (_, e) => DrawFavoriteNode(e);
         _favoritesTree.NodeMouseClick += (_, e) =>
         {
-            if (e.Node?.Tag is string path && e.Button == MouseButtons.Left)
+            // 分组节点 Tag="GROUP"，不是路径，跳过
+            if (e.Node?.Tag is string path && path != "GROUP" && e.Button == MouseButtons.Left)
             {
                 OpenPathInCurrentTab(path);
             }
         };
         _favoritesTree.NodeMouseDoubleClick += (_, e) =>
         {
-            if (e.Node?.Tag is string path)
+            if (e.Node?.Tag is string path && path != "GROUP")
             {
                 OpenPathInCurrentTab(path);
             }
@@ -123,6 +124,7 @@ public sealed class MainForm : Form
         };
         _tabControl.TabCloseRequested += (_, idx) => CloseTab(idx);
         _tabControl.SelectedIndexChanged += (_, _) => OnTabChanged();
+        _tabControl.TabContextMenuRequested += (_, idx) => ShowTabContextMenu(idx);
         rightPanel.Controls.Add(_tabControl);
 
         _splitter.Panel1.Controls.Add(_sidebar);
@@ -234,8 +236,8 @@ public sealed class MainForm : Form
         }
         else
         {
-            // 空白标签：默认打开文档目录
-            content.NavigateTo(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments));
+            // 空白标签：默认打开"此电脑"
+            content.NavigateTo("ThisPC");
         }
     }
 
@@ -263,6 +265,75 @@ public sealed class MainForm : Form
             AddNewTab("");
         }
         _tabControl.TabPages.RemoveAt(index);
+    }
+
+    /// <summary>
+    /// 标签页右键菜单：收藏当前路径、关闭标签、复制路径等
+    /// </summary>
+    private void ShowTabContextMenu(int index)
+    {
+        if (index < 0 || index >= _tabControl.TabCount) return;
+        if (_tabControl.TabPages[index].Controls[0] is not FileTabUserControl content) return;
+
+        string path = content.CurrentPath;
+        bool isFav = path != "ThisPC" && _favorites.IsFavorite(path);
+
+        var menu = new ContextMenuStrip
+        {
+            BackColor = Theme.BgSidebar,
+            ForeColor = Theme.FgMain,
+            Font = Theme.GetUiFont(9),
+            ShowImageMargin = false
+        };
+
+        // 收藏 / 取消收藏当前标签路径
+        if (path != "ThisPC")
+        {
+            var favItem = menu.Items.Add(isFav ? "从收藏夹移除" : "收藏到收藏夹");
+            favItem.Click += (_, _) =>
+            {
+                if (isFav)
+                {
+                    _favorites.Remove(path);
+                }
+                else
+                {
+                    string name = System.IO.Path.GetFileName(path);
+                    if (string.IsNullOrEmpty(name)) name = path.TrimEnd('\\');
+                    _favorites.Add(new FavoriteItem { Name = name, Path = path, Group = "自定义" });
+                }
+            };
+            menu.Items.Add("-");
+        }
+
+        // 复制路径
+        if (path != "ThisPC")
+        {
+            var copyPath = menu.Items.Add("复制路径");
+            copyPath.Click += (_, _) => Clipboard.SetText(path);
+            menu.Items.Add("-");
+        }
+
+        // 关闭标签
+        var closeItem = menu.Items.Add("关闭标签");
+        closeItem.Click += (_, _) => CloseTab(index);
+
+        // 关闭其他标签
+        if (_tabControl.TabCount > 1)
+        {
+            var closeOthers = menu.Items.Add("关闭其他标签");
+            closeOthers.Click += (_, _) =>
+            {
+                // 从后往前删，跳过 index
+                for (int i = _tabControl.TabCount - 1; i >= 0; i--)
+                {
+                    if (i != index) _tabControl.TabPages.RemoveAt(i);
+                }
+            };
+        }
+
+        // 定位到鼠标位置
+        menu.Show(Cursor.Position);
     }
 
     private void OnTabChanged()
