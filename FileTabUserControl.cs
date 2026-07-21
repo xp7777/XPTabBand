@@ -854,66 +854,73 @@ public sealed class FileTabUserControl : UserControl
     // ===== 自定义绘制 ListView（深色主题）=====
     private void DrawListItem(DrawListViewItemEventArgs e)
     {
-        bool selected = e.Item.Selected;
+        var item = e.Item;
+        bool selected = item.Selected;
+        bool hot = e.State.HasFlag(ListViewItemStates.Hot);
+
         Color bg = selected ? Theme.BgListItemSelected
-                            : (e.ItemIndex % 2 == 0 ? Theme.BgListItem : Theme.BgListItemAlt);
+                            : (hot ? Theme.BgListItemHover
+                                   : (e.ItemIndex % 2 == 0 ? Theme.BgListItem : Theme.BgListItemAlt));
 
-        // 鼠标悬停
-        if (!selected && e.State.HasFlag(ListViewItemStates.Hot))
-            bg = Theme.BgListItemHover;
-
+        // 画整行背景
         using (var b = new SolidBrush(bg))
             e.Graphics.FillRectangle(b, e.Bounds);
+
+        // 一次性绘制所有列，不依赖 DrawSubItem（悬停时 DrawSubItem 可能不被完整调用）
+        var sf = new StringFormat
+        {
+            LineAlignment = StringAlignment.Center,
+            Trimming = StringTrimming.EllipsisCharacter,
+            FormatFlags = StringFormatFlags.NoWrap
+        };
+        var font = Theme.GetUiFont(9);
+
+        for (int col = 0; col < _listView.Columns.Count; col++)
+        {
+            // 获取该列的单元格区域
+            Rectangle cellBounds;
+            if (col == 0)
+                cellBounds = e.Bounds;
+            else if (col < item.SubItems.Count)
+                cellBounds = item.SubItems[col].Bounds;
+            else
+                continue;
+
+            // 限制在行高范围内（SubItem.Bounds 有时高度不准）
+            cellBounds = new Rectangle(cellBounds.X, e.Bounds.Y, cellBounds.Width, e.Bounds.Height);
+
+            string text = col < item.SubItems.Count ? item.SubItems[col].Text : "";
+
+            // 名称列：文件夹/文件图标 + 文字
+            if (col == 0)
+            {
+                bool isDir = item.Tag is DirectoryInfo;
+                int iconX = cellBounds.X + 4;
+                int iconY = cellBounds.Y + (cellBounds.Height - 16) / 2;
+                DrawFileIcon(e.Graphics, item.Text, isDir, iconX, iconY, 16);
+
+                var textRect = new Rectangle(iconX + 22, cellBounds.Y, cellBounds.Width - 26, cellBounds.Height);
+                Color fg0 = selected ? Color.White : Theme.FgMain;
+                using var b0 = new SolidBrush(fg0);
+                e.Graphics.DrawString(text, font, b0, textRect, sf);
+            }
+            else
+            {
+                // 修改日期/类型/大小列
+                Color fg = selected ? Color.White : Theme.FgSecondary;
+                var textRect = new Rectangle(cellBounds.X + 4, cellBounds.Y, cellBounds.Width - 8, cellBounds.Height);
+                using var bc = new SolidBrush(fg);
+                e.Graphics.DrawString(text, font, bc, textRect, sf);
+            }
+        }
 
         e.DrawDefault = false;
     }
 
     private void DrawSubItem(DrawListViewSubItemEventArgs e)
     {
-        var item = e.Item;
-        bool selected = item.Selected;
-        Color bg = selected ? Theme.BgListItemSelected
-                            : (item.Index % 2 == 0 ? Theme.BgListItem : Theme.BgListItemAlt);
-        if (!selected && item.ListView is not null)
-        {
-            // 不重新填充背景，DrawItem 已经画过
-        }
-
-        Color fg = selected ? Color.White : Theme.FgMain;
-        if (e.ColumnIndex == 1 || e.ColumnIndex == 2 || e.ColumnIndex == 3)
-            fg = selected ? Color.White : Theme.FgSecondary;
-
-        // 名称列画图标
-        if (e.ColumnIndex == 0)
-        {
-            // 文件夹图标（用色块+文字简化）
-            bool isDir = item.Tag is DirectoryInfo;
-            int iconX = e.Bounds.X + 4;
-            int iconY = e.Bounds.Y + (e.Bounds.Height - 16) / 2;
-            DrawFileIcon(e.Graphics, item.Text, isDir, iconX, iconY, 16);
-
-            var textRect = new Rectangle(iconX + 22, e.Bounds.Y, e.Bounds.Width - 26, e.Bounds.Height);
-            using var b = new SolidBrush(fg);
-            var sf = new StringFormat
-            {
-                LineAlignment = StringAlignment.Center,
-                Trimming = StringTrimming.EllipsisCharacter,
-                FormatFlags = StringFormatFlags.NoWrap
-            };
-            e.Graphics.DrawString(e.Item.Text, Theme.GetUiFont(9), b, textRect, sf);
-        }
-        else
-        {
-            var textRect = new Rectangle(e.Bounds.X + 4, e.Bounds.Y, e.Bounds.Width - 8, e.Bounds.Height);
-            using var b = new SolidBrush(fg);
-            var sf = new StringFormat
-            {
-                LineAlignment = StringAlignment.Center,
-                Trimming = StringTrimming.EllipsisCharacter,
-                FormatFlags = StringFormatFlags.NoWrap
-            };
-            e.Graphics.DrawString(e.SubItem?.Text ?? "", Theme.GetUiFont(9), b, textRect, sf);
-        }
+        // 所有绘制已在 DrawListItem 中完成，禁用默认绘制避免覆盖
+        e.DrawDefault = false;
     }
 
     private void DrawColumnHeader(DrawListViewColumnHeaderEventArgs e)
