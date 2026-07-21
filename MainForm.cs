@@ -1,4 +1,4 @@
-using System.Drawing;
+﻿using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Windows.Forms;
 
@@ -308,8 +308,9 @@ public sealed class MainForm : Form
         if (selected) bg = Theme.BgListItemSelected;
         else if (hover) bg = Theme.BgListItemHover;
 
+        int fullWidth = _favoritesTree.ClientSize.Width;
         using (var b = new SolidBrush(bg))
-            e.Graphics.FillRectangle(b, e.Bounds);
+            e.Graphics.FillRectangle(b, 0, e.Bounds.Y, fullWidth, e.Bounds.Height);
 
         // 文字
         Color fg = isGroup ? Theme.FgSecondary : (selected ? Color.White : Theme.FgMain);
@@ -336,7 +337,8 @@ public sealed class MainForm : Form
             e.Graphics.FillPath(b2, path);
         }
 
-        var textRect = new Rectangle(e.Bounds.X + iconPad, e.Bounds.Y, e.Bounds.Width - iconPad - 4, e.Bounds.Height);
+        int textX = e.Bounds.X + iconPad;
+        var textRect = new Rectangle(textX, e.Bounds.Y, fullWidth - textX - 8, e.Bounds.Height);
         e.Graphics.DrawString(e.Node.Text, font, fb, textRect, sf);
     }
 

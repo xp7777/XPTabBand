@@ -1,4 +1,4 @@
-using System.Drawing;
+﻿using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Windows.Forms;
 
@@ -295,13 +295,42 @@ public sealed class ModernTabControl : TabControl
 
     protected override void WndProc(ref Message m)
     {
-        // 屏蔽系统默认绘制 WM_PAINT 由 OnPaint 接管
-        base.WndProc(ref m);
+        const int WM_LBUTTONDOWN = 0x0201;
+        const int WM_LBUTTONDBLCLK = 0x0203;
+        const int WM_MBUTTONDOWN = 0x0207;
 
-        // 防止系统重绘导致闪烁
-        if (m.Msg == 0x000F /* WM_PAINT */)
+        if (m.Msg == WM_LBUTTONDOWN)
         {
-            // 已经由 OnPaint 绘制
+            int l = m.LParam.ToInt32();
+            var pt = new Point((short)(l & 0xFFFF), (short)(l >> 16));
+            if (_newBtnRect.Contains(pt)) { NewTabRequested?.Invoke(this, EventArgs.Empty); return; }
+            for (int i = 0; i < TabCount; i++)
+                if (_closeBtnRects.TryGetValue(i, out var cr) && cr.Contains(pt)) { TabCloseRequested?.Invoke(this, i); return; }
         }
+        else if (m.Msg == WM_LBUTTONDBLCLK)
+        {
+            int l = m.LParam.ToInt32();
+            var pt = new Point((short)(l & 0xFFFF), (short)(l >> 16));
+            for (int i = 0; i < TabCount; i++)
+            {
+                if (_closeBtnRects.TryGetValue(i, out var cr) && cr.Contains(pt)) return;
+                var r = GetTabRect(i); r = new Rectangle(r.X, 0, r.Width, TabHeight);
+                if (r.Contains(pt)) { TabCloseRequested?.Invoke(this, i); return; }
+            }
+            return;
+        }
+        else if (m.Msg == WM_MBUTTONDOWN)
+        {
+            int l = m.LParam.ToInt32();
+            var pt = new Point((short)(l & 0xFFFF), (short)(l >> 16));
+            for (int i = 0; i < TabCount; i++)
+            {
+                var r = GetTabRect(i); r = new Rectangle(r.X, 0, r.Width, TabHeight);
+                if (r.Contains(pt)) { TabCloseRequested?.Invoke(this, i); return; }
+            }
+            return;
+        }
+
+        base.WndProc(ref m);
     }
 }
