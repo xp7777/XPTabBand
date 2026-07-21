@@ -30,6 +30,12 @@ public sealed class FileTabUserControl : UserControl
     private readonly TextBox _addressEdit; // 文本编辑模式
     private bool _addressEditing;
 
+    // 搜索框
+    private readonly TextBox _searchBox;
+    private System.Threading.CancellationTokenSource? _searchCts;
+    private bool _isSearchingRecursive; // 是否处于递归搜索结果状态
+    private bool _suppressSearch;       // 程序修改搜索框文本时临时抑制搜索
+
     // 文件列表
     private readonly ListView _listView;
     private readonly ImageList _smallIcons;
@@ -84,10 +90,13 @@ public sealed class FileTabUserControl : UserControl
             BackColor = Theme.BgMain,
             Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right
         };
-        _addressBar.Width = _toolbar.Width - x - 6;
+        // 搜索框宽度固定，地址栏占剩余空间
+        const int SearchBoxWidth = 180;
+        const int SearchBoxGap = 6;
+        _addressBar.Width = _toolbar.Width - x - SearchBoxWidth - SearchBoxGap - 6;
         _toolbar.Resize += (_, _) =>
         {
-            _addressBar.Width = _toolbar.Width - _addressBar.Left - 6;
+            _addressBar.Width = _toolbar.Width - _addressBar.Left - SearchBoxWidth - SearchBoxGap - 6;
         };
 
         _crumbsHost = new Panel
@@ -124,10 +133,71 @@ public sealed class FileTabUserControl : UserControl
         // 双击地址栏切换文本编辑模式
         _addressBar.DoubleClick += (_, _) => EnterAddressEditMode();
 
+        // 搜索框：锚定到工具栏右侧
+        _searchBox = new TextBox
+        {
+            BorderStyle = BorderStyle.FixedSingle,
+            Font = Theme.GetUiFont(9),
+            BackColor = Theme.BgMain,
+            ForeColor = Theme.FgMain,
+            Width = SearchBoxWidth,
+            Anchor = AnchorStyles.Top | AnchorStyles.Right,
+            Text = ""
+        };
+        // 定位到工具栏右侧
+        _searchBox.Location = new Point(_toolbar.Width - SearchBoxWidth - 6, 7);
+        _toolbar.Resize += (_, _) =>
+        {
+            _searchBox.Location = new Point(_toolbar.Width - SearchBoxWidth - 6, 7);
+        };
+        // 占位提示
+        _searchBox.GotFocus += (_, _) =>
+        {
+            if (_searchBox.Text == " 搜索...")
+            {
+                _searchBox.Text = "";
+                _searchBox.ForeColor = Theme.FgMain;
+            }
+        };
+        _searchBox.LostFocus += (_, _) =>
+        {
+            if (string.IsNullOrWhiteSpace(_searchBox.Text))
+            {
+                _searchBox.Text = " 搜索...";
+                _searchBox.ForeColor = Theme.FgSecondary;
+                // 失焦且清空时恢复当前目录
+                if (_isSearchingRecursive)
+                {
+                    _isSearchingRecursive = false;
+                    LoadDirectory(_currentPath);
+                }
+            }
+        };
+        _searchBox.TextChanged += (_, _) => OnSearchTextChanged();
+        _searchBox.KeyDown += (_, e) =>
+        {
+            if (e.KeyCode == Keys.Enter)
+            {
+                e.Handled = true;
+                e.SuppressKeyPress = true;
+                OnSearchEnter();
+            }
+            else if (e.KeyCode == Keys.Escape)
+            {
+                _searchBox.Clear();
+                e.Handled = true;
+                e.SuppressKeyPress = true;
+            }
+        };
+        // 初始占位文本
+        _searchBox.Text = " 搜索...";
+        _searchBox.ForeColor = Theme.FgSecondary;
+
         _toolbar.Controls.Add(_btnBack);
         _toolbar.Controls.Add(_btnForward);
         _toolbar.Controls.Add(_btnUp);
         _toolbar.Controls.Add(_addressBar);
+        _toolbar.Controls.Add(_searchBox);
 
         // ===== 文件列表 =====
         _smallIcons = new ImageList { ImageSize = new Size(16, 16), ColorDepth = ColorDepth.Depth32Bit };
@@ -250,6 +320,7 @@ public sealed class FileTabUserControl : UserControl
 
     private void NavigateToThisPC()
     {
+        ResetSearchBox();
         _listView.Items.Clear();
         _listView.BeginUpdate();
         try
@@ -294,6 +365,12 @@ public sealed class FileTabUserControl : UserControl
             {
                 _backStack.Add(_currentPath);
                 _forwardStack.Clear();
+            }
+
+            // 导航到新目录时取消进行中的搜索并清空搜索框
+            if (_searchBox.Text != " 搜索...")
+            {
+                ResetSearchBox();
             }
 
             LoadDirectory(path);
@@ -558,6 +635,220 @@ public sealed class FileTabUserControl : UserControl
             else NavigateToThisPC();
         }
         catch { }
+    }
+
+    // ===== 搜索功能 =====
+
+    /// <summary>
+    /// 重置搜索框到占位状态，取消进行中的搜索
+    /// </summary>
+    private void ResetSearchBox()
+    {
+        _searchCts?.Cancel();
+        _searchCts = null;
+        _isSearchingRecursive = false;
+        _suppressSearch = true;
+        _searchBox.Text = " 搜索...";
+        _searchBox.ForeColor = Theme.FgSecondary;
+        _suppressSearch = false;
+    }
+
+    /// <summary>
+    /// 搜索框文本变化：实时筛选当前目录（不递归）
+    /// </summary>
+    private void OnSearchTextChanged()
+    {
+        // 程序修改文本时抑制搜索
+        if (_suppressSearch) return;
+        // 占位文本不触发搜索
+        if (_searchBox.Text == " 搜索...") return;
+        // 递归搜索结果中输入新关键词，切回实时筛选
+        if (_isSearchingRecursive)
+        {
+            _isSearchingRecursive = false;
+        }
+
+        // 取消上一次递归搜索（如有）
+        _searchCts?.Cancel();
+        _searchCts = null;
+
+        string keyword = _searchBox.Text.Trim();
+        if (string.IsNullOrEmpty(keyword))
+        {
+            // 关键词为空：恢复当前目录
+            if (_currentPath != "ThisPC") LoadDirectory(_currentPath);
+            return;
+        }
+
+        // 实时筛选当前目录
+        FilterCurrentDirectory(keyword);
+    }
+
+    /// <summary>
+    /// 回车：递归搜索当前目录及子目录
+    /// </summary>
+    private void OnSearchEnter()
+    {
+        string keyword = _searchBox.Text.Trim();
+        if (string.IsNullOrEmpty(keyword) || _currentPath == "ThisPC") return;
+
+        // 取消上一次递归搜索
+        _searchCts?.Cancel();
+        _searchCts = new System.Threading.CancellationTokenSource();
+        var token = _searchCts.Token;
+
+        _isSearchingRecursive = true;
+        _statusBar.Text = $"  正在搜索“{keyword}”...";
+
+        string searchRoot = _currentPath;
+        // 在后台线程递归搜索，避免阻塞 UI
+        System.Threading.Tasks.Task.Run(() =>
+        {
+            var results = new List<FileSystemInfo>();
+            try
+            {
+                SearchRecursive(searchRoot, keyword, token, results);
+            }
+            catch (OperationCanceledException) { }
+
+            // 回到 UI 线程显示结果
+            if (token.IsCancellationRequested) return;
+            BeginInvoke((Action)(() =>
+            {
+                if (token.IsCancellationRequested) return;
+                ShowSearchResults(results, keyword);
+            }));
+        }, token);
+    }
+
+    /// <summary>
+    /// 实时筛选当前目录：从已加载的列表项中筛选匹配项
+    /// </summary>
+    private void FilterCurrentDirectory(string keyword)
+    {
+        if (_currentPath == "ThisPC") return;
+        try
+        {
+            var dir = new DirectoryInfo(_currentPath);
+            var entries = new List<FileSystemInfo>();
+            try { entries.AddRange(dir.GetDirectories()); }
+            catch (UnauthorizedAccessException) { }
+            catch { }
+            try { entries.AddRange(dir.GetFiles()); }
+            catch (UnauthorizedAccessException) { }
+            catch { }
+
+            // 过滤隐藏文件
+            if (!_settings.ShowHiddenFiles)
+                entries = entries.Where(e => (e.Attributes & FileAttributes.Hidden) == 0).ToList();
+
+            // 按关键词筛选（名称包含关键词，不区分大小写）
+            var matched = entries.Where(e => e.Name.Contains(keyword, StringComparison.OrdinalIgnoreCase)).ToList();
+            matched.Sort((a, b) =>
+            {
+                bool aDir = (a.Attributes & FileAttributes.Directory) != 0;
+                bool bDir = (b.Attributes & FileAttributes.Directory) != 0;
+                if (aDir != bDir) return aDir ? -1 : 1;
+                return string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase);
+            });
+
+            FillListView(matched);
+            _statusBar.Text = $"  筛选“{keyword}”：{matched.Count} 项    |    {_currentPath}";
+        }
+        catch { }
+    }
+
+    /// <summary>
+    /// 递归搜索子目录
+    /// </summary>
+    private static void SearchRecursive(string dir, string keyword,
+        System.Threading.CancellationToken token, List<FileSystemInfo> results)
+    {
+        token.ThrowIfCancellationRequested();
+        // 限制结果数量避免过多
+        if (results.Count >= 500) return;
+
+        DirectoryInfo di;
+        try { di = new DirectoryInfo(dir); }
+        catch { return; }
+
+        FileInfo[] files = Array.Empty<FileInfo>();
+        DirectoryInfo[] dirs = Array.Empty<DirectoryInfo>();
+        try { files = di.GetFiles(); }
+        catch (UnauthorizedAccessException) { }
+        catch { }
+        try { dirs = di.GetDirectories(); }
+        catch (UnauthorizedAccessException) { }
+        catch { }
+
+        foreach (var f in files)
+        {
+            token.ThrowIfCancellationRequested();
+            if (f.Name.Contains(keyword, StringComparison.OrdinalIgnoreCase))
+            {
+                results.Add(f);
+                if (results.Count >= 500) return;
+            }
+        }
+
+        foreach (var d in dirs)
+        {
+            token.ThrowIfCancellationRequested();
+            if (d.Name.Contains(keyword, StringComparison.OrdinalIgnoreCase))
+            {
+                results.Add(d);
+                if (results.Count >= 500) return;
+            }
+            // 递归子目录
+            SearchRecursive(d.FullName, keyword, token, results);
+        }
+    }
+
+    /// <summary>
+    /// 显示递归搜索结果
+    /// </summary>
+    private void ShowSearchResults(List<FileSystemInfo> results, string keyword)
+    {
+        // 排序：文件夹优先
+        results.Sort((a, b) =>
+        {
+            bool aDir = (a.Attributes & FileAttributes.Directory) != 0;
+            bool bDir = (b.Attributes & FileAttributes.Directory) != 0;
+            if (aDir != bDir) return aDir ? -1 : 1;
+            return string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase);
+        });
+
+        FillListView(results);
+        _statusBar.Text = $"  搜索“{keyword}”完成：{results.Count} 项    |    {_currentPath}";
+    }
+
+    /// <summary>
+    /// 填充 ListView
+    /// </summary>
+    private void FillListView(List<FileSystemInfo> entries)
+    {
+        _listView.Items.Clear();
+        _listView.BeginUpdate();
+        try
+        {
+            foreach (var fsi in entries)
+            {
+                bool isDir = (fsi.Attributes & FileAttributes.Directory) != 0;
+                var item = new ListViewItem(isDir ? fsi.Name : GetDisplayName(fsi.Name))
+                {
+                    Tag = fsi,
+                    ImageKey = isDir ? "folder" : "file"
+                };
+                item.SubItems.Add(fsi.LastWriteTime.ToString("yyyy-MM-dd HH:mm"));
+                item.SubItems.Add(isDir ? "文件夹" : GetFileExtension(fsi.Name));
+                item.SubItems.Add(isDir ? "" : FormatFileSize(((FileInfo)fsi).Length));
+                _listView.Items.Add(item);
+            }
+        }
+        finally
+        {
+            _listView.EndUpdate();
+        }
     }
 
     // ===== 自定义绘制 ListView（深色主题）=====
