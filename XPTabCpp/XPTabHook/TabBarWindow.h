@@ -24,6 +24,15 @@ struct TabItem
     }
 };
 
+// 收藏项数据
+struct FavoriteItem
+{
+    std::wstring title;   // 显示名
+    LPITEMIDLIST pidl;    // 文件夹 PIDL（深拷贝，TabBarWindow 负责释放）
+
+    FavoriteItem() : pidl(NULL) {}
+};
+
 class TabBarWindow
 {
 public:
@@ -78,6 +87,11 @@ private:
     bool m_shellTabRectValid;     // 原始 rect 是否已记录
     HWND m_lastShellTabHwnd;      // 上次找到的 ShellTab 窗口句柄（用于检测变化）
 
+    // 收藏列表（所有 TabBarWindow 实例共享同一份文件）
+    // 注意：每个 Explorer 窗口的 TabBarWindow 都会加载一份内存副本，
+    // 但保存时写同一文件。修改后其他窗口会在下次 LoadFavorites 时同步。
+    std::vector<FavoriteItem> m_favorites;
+
     // 初始化：尝试获取 IWebBrowser2
     bool TryAcquireBrowser();
 
@@ -97,7 +111,8 @@ private:
     void UpdateTabRects();
 
     // 命中测试：判断点击位置属于哪个标签或按钮
-    // 返回值：>=0 为标签索引，-1 为 + 按钮，-2 为关闭按钮（需配合 tabIndex），-3 为无
+    // 返回值：>=0 为标签索引，-1 为 + 按钮，-2 为关闭按钮（需配合 tabIndex），
+    //         -3 为无，-4 为收藏按钮
     int HitTest(int x, int y, int* outTabIndex);
 
     // 处理窗口消息
@@ -105,4 +120,24 @@ private:
 
     // 绘制标签栏
     void OnPaint();
+
+    // ---- 收藏功能 ----
+    // 加载收藏列表（从 %LOCALAPPDATA%\XPTabCpp\favorites.dat）
+    void LoadFavorites();
+    // 保存收藏列表
+    void SaveFavorites();
+    // 释放 m_favorites 中所有 PIDL
+    void FreeFavorites();
+    // 添加当前激活标签到收藏
+    void AddCurrentTabToFavorites();
+    // 删除指定索引的收藏项
+    void RemoveFavorite(int index);
+    // 弹出收藏菜单（点击 ☆ 按钮时）
+    // 返回用户选择的收藏项索引，-1 表示取消
+    void ShowFavoritesMenu();
+    // 弹出标签右键菜单
+    void ShowTabContextMenu(int tabIndex, int screenX, int screenY);
+    // 弹出收藏项右键菜单（在收藏菜单中右键某项）
+    // 返回 true 表示删除了该项
+    bool ShowFavoriteContextItem(int favoriteIndex, int screenX, int screenY);
 };

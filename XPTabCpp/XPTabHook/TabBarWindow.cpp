@@ -11,6 +11,7 @@
 
 #include "stdafx.h"
 #include <windowsx.h>
+#include <cmath>
 #include "TabBarWindow.h"
 #include "ExplorerInterface.h"
 #include "Utils.h"
@@ -37,11 +38,14 @@ static const COLORREF kColorSeparator = RGB(70, 70, 70);
 static const int HIT_NONE       = -3;
 static const int HIT_PLUS       = -1;
 static const int HIT_CLOSE      = -2;
+static const int HIT_FAVORITE   = -4;  // ☆ 收藏按钮
 
 // 单个标签默认宽度
 static const int kDefaultTabWidth = 150;
 // + 按钮区域宽度
 static const int kPlusButtonWidth = 28;
+// 收藏按钮区域宽度（在 + 按钮右侧）
+static const int kFavoriteButtonWidth = 28;
 // 关闭按钮区域宽度（在标签内部右侧）
 static const int kCloseButtonWidth = 20;
 // 文字左边距
@@ -250,6 +254,9 @@ bool TabBarWindow::Create(HWND hParent)
     // 尝试获取 IWebBrowser2 并创建初始标签
     // Explorer 可能尚未完全初始化，TryAcquireBrowser 内部会处理失败
     TryAcquireBrowser();
+
+    // 加载收藏列表（从持久化文件）
+    LoadFavorites();
 
     Utils::Log(L"TabBarWindow 创建成功");
     return true;
@@ -467,6 +474,7 @@ void TabBarWindow::Destroy()
         m_pBrowser = NULL;
     }
     FreeAllPidls();
+    FreeFavorites();
     if (m_hwnd && IsWindow(m_hwnd))
     {
         KillTimer(m_hwnd, kTabBarTimerId);
@@ -616,8 +624,17 @@ int TabBarWindow::HitTest(int x, int y, int* outTabIndex)
 {
     if (outTabIndex) *outTabIndex = -1;
 
-    // 检查 + 按钮区域（最后一个标签右侧）
+    // + 按钮起始 x（最后一个标签右侧）
     int plusX = static_cast<int>(m_tabs.size()) * m_tabWidth;
+
+    // 检查收藏按钮区域（+ 按钮右侧）
+    int favX = plusX + kPlusButtonWidth;
+    if (x >= favX && x <= favX + kFavoriteButtonWidth)
+    {
+        return HIT_FAVORITE;
+    }
+
+    // 检查 + 按钮区域
     if (x >= plusX && x <= plusX + kPlusButtonWidth)
     {
         return HIT_PLUS;
@@ -720,6 +737,11 @@ LRESULT TabBarWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam)
             break;
         }
 
+        case HIT_FAVORITE:
+            // ☆ 收藏按钮：弹出收藏菜单
+            ShowFavoritesMenu();
+            break;
+
         case HIT_CLOSE:
             // × 按钮：关闭对应标签
             CloseTab(tabIndex);
@@ -735,6 +757,29 @@ LRESULT TabBarWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam)
                 }
             }
             break;
+        }
+        return 0;
+    }
+
+    case WM_RBUTTONDOWN:
+    {
+        // 右键标签：弹出上下文菜单
+        int x = GET_X_LPARAM(lParam);
+        int y = GET_Y_LPARAM(lParam);
+        int tabIndex = -1;
+        int hit = HitTest(x, y, &tabIndex);
+
+        if (hit >= 0)
+        {
+            // 右键标签主体：弹出标签菜单
+            POINT pt = { x, y };
+            ClientToScreen(m_hwnd, &pt);
+            ShowTabContextMenu(hit, pt.x, pt.y);
+        }
+        else if (hit == HIT_FAVORITE)
+        {
+            // 右键收藏按钮：直接弹出收藏菜单（同左键）
+            ShowFavoritesMenu();
         }
         return 0;
     }
@@ -916,6 +961,34 @@ void TabBarWindow::OnPaint()
     SelectObject(memDc, oldPen);
     DeleteObject(plusPen);
 
+    // 绘制 ☆ 收藏按钮（+ 按钮右侧）
+    // 使用 5 角星图案，空心表示无收藏，实心表示有收藏
+    int favCx = plusX + kPlusButtonWidth / 2 + kFavoriteButtonWidth / 2;
+    int favCy = height / 2;
+    int starR = 7;  // 星形外接圆半径
+    COLORREF favColor = m_favorites.empty() ? kColorPlus : kColorCloseActive;
+    HPEN favPen = CreatePen(PS_SOLID, 1, favColor);
+    oldPen = (HPEN)SelectObject(memDc, favPen);
+    HBRUSH favBrush = CreateSolidBrush(
+        m_favorites.empty() ? kColorBg : favColor);
+    HBRUSH oldBrush = (HBRUSH)SelectObject(memDc, favBrush);
+
+    // 绘制 5 角星：5 个外顶点 + 5 个内顶点，交替连接
+    POINT starPts[10];
+    for (int i = 0; i < 10; i++)
+    {
+        double angle = -3.14159265358979 / 2.0 + i * 3.14159265358979 / 5.0;
+        int r = (i % 2 == 0) ? starR : starR * 2 / 5;  // 外顶点半径 vs 内顶点半径
+        starPts[i].x = favCx + static_cast<int>(r * cos(angle));
+        starPts[i].y = favCy + static_cast<int>(r * sin(angle));
+    }
+    Polygon(memDc, starPts, 10);
+
+    SelectObject(memDc, oldBrush);
+    DeleteObject(favBrush);
+    SelectObject(memDc, oldPen);
+    DeleteObject(favPen);
+
     SelectObject(memDc, oldFont);
     DeleteObject(hFont);
 
@@ -926,4 +999,391 @@ void TabBarWindow::OnPaint()
     DeleteDC(memDc);
 
     EndPaint(m_hwnd, &ps);
+}
+
+// ====================================================================
+// 收藏功能实现
+// ====================================================================
+
+// 获取收藏文件路径：%LOCALAPPDATA%\XPTabCpp\favorites.dat
+static std::wstring GetFavoritesFilePath()
+{
+    wchar_t buf[MAX_PATH] = { 0 };
+    DWORD len = GetEnvironmentVariableW(L"LOCALAPPDATA", buf, MAX_PATH);
+    std::wstring path;
+    if (len > 0 && len < MAX_PATH)
+    {
+        path = buf;
+        path += L"\\XPTabCpp";
+        CreateDirectoryW(path.c_str(), NULL);
+        path += L"\\favorites.dat";
+    }
+    else
+    {
+        // 回退到 DLL 所在目录
+        wchar_t dllPath[MAX_PATH] = { 0 };
+        HMODULE hMod = Utils::GetThisModule();
+        if (hMod && GetModuleFileNameW(hMod, dllPath, MAX_PATH) > 0)
+        {
+            path = dllPath;
+            size_t pos = path.find_last_of(L"\\/");
+            if (pos != std::wstring::npos)
+                path = path.substr(0, pos + 1);
+            path += L"favorites.dat";
+        }
+        else
+        {
+            path = L"favorites.dat";
+        }
+    }
+    return path;
+}
+
+// 释放 m_favorites 中所有 PIDL
+void TabBarWindow::FreeFavorites()
+{
+    for (auto& fav : m_favorites)
+    {
+        if (fav.pidl)
+        {
+            ILFree(fav.pidl);
+            fav.pidl = NULL;
+        }
+    }
+    m_favorites.clear();
+}
+
+// 加载收藏列表
+// 文件格式（二进制）：
+//   [DWORD count]
+//   重复 count 次：
+//     [DWORD titleLen（含 \0 的 wchar 数）][wchar[] title]
+//     [DWORD pathLen（含 \0 的 wchar 数）][wchar[] path]
+// 使用 path 而非直接序列化 PIDL，因为 ILSaveToStream/ILLoadFromStream 已弃用
+// 加载时用 SHParseDisplayName 从 path 还原 PIDL
+void TabBarWindow::LoadFavorites()
+{
+    FreeFavorites();
+
+    std::wstring path = GetFavoritesFilePath();
+    FILE* fp = NULL;
+    if (_wfopen_s(&fp, path.c_str(), L"rb") != 0 || !fp)
+    {
+        // 文件不存在是正常情况（首次使用）
+        return;
+    }
+
+    DWORD count = 0;
+    if (fread(&count, sizeof(count), 1, fp) != 1)
+    {
+        fclose(fp);
+        return;
+    }
+
+    for (DWORD i = 0; i < count; i++)
+    {
+        // 读取标题
+        DWORD titleLen = 0;
+        if (fread(&titleLen, sizeof(titleLen), 1, fp) != 1 || titleLen == 0 || titleLen > 1024)
+            break;
+
+        std::wstring title(titleLen, L'\0');
+        if (fread(&title[0], sizeof(wchar_t), titleLen, fp) != titleLen)
+            break;
+        size_t nul = title.find(L'\0');
+        if (nul != std::wstring::npos)
+            title.resize(nul);
+
+        // 读取路径
+        DWORD pathLen = 0;
+        if (fread(&pathLen, sizeof(pathLen), 1, fp) != 1 || pathLen == 0 || pathLen > 32768)
+            break;
+
+        std::wstring favPath(pathLen, L'\0');
+        if (fread(&favPath[0], sizeof(wchar_t), pathLen, fp) != pathLen)
+            break;
+        size_t nul2 = favPath.find(L'\0');
+        if (nul2 != std::wstring::npos)
+            favPath.resize(nul2);
+
+        // 从路径还原 PIDL
+        LPITEMIDLIST pidl = NULL;
+        HRESULT hr = SHParseDisplayName(favPath.c_str(), NULL, &pidl, 0, NULL);
+        if (FAILED(hr) || !pidl)
+        {
+            // 路径无效（可能是特殊位置如"此电脑"），跳过
+            Utils::Log(L"收藏路径无效，跳过：" + favPath);
+            continue;
+        }
+
+        FavoriteItem fav;
+        fav.title = title;
+        fav.pidl = pidl;
+        m_favorites.push_back(fav);
+    }
+
+    fclose(fp);
+    Utils::Log(L"已加载收藏列表：" + std::to_wstring(m_favorites.size()) + L" 项");
+}
+
+// 保存收藏列表
+void TabBarWindow::SaveFavorites()
+{
+    std::wstring path = GetFavoritesFilePath();
+    FILE* fp = NULL;
+    if (_wfopen_s(&fp, path.c_str(), L"wb") != 0 || !fp)
+    {
+        Utils::Log(L"保存收藏失败：无法创建文件 " + path);
+        return;
+    }
+
+    DWORD count = static_cast<DWORD>(m_favorites.size());
+    fwrite(&count, sizeof(count), 1, fp);
+
+    for (DWORD i = 0; i < count; i++)
+    {
+        const FavoriteItem& fav = m_favorites[i];
+
+        // 写入标题（含 \0）
+        std::wstring title = fav.title;
+        if (title.empty())
+            title = L"(无标题)";
+        DWORD titleLen = static_cast<DWORD>(title.length() + 1);
+        fwrite(&titleLen, sizeof(titleLen), 1, fp);
+        fwrite(title.c_str(), sizeof(wchar_t), titleLen, fp);
+
+        // 从 PIDL 获取路径并写入
+        wchar_t pathBuf[MAX_PATH] = { 0 };
+        BOOL gotPath = FALSE;
+        if (fav.pidl)
+        {
+            gotPath = SHGetPathFromIDListW(fav.pidl, pathBuf);
+        }
+        std::wstring favPath;
+        if (gotPath)
+        {
+            favPath = pathBuf;
+        }
+        else
+        {
+            // 特殊位置（如此电脑、控制面板）：用显示名作为标识
+            // 注意：这类收藏无法在重启后还原 PIDL，会被跳过
+            favPath = L"";
+        }
+        DWORD pathLen = static_cast<DWORD>(favPath.length() + 1);
+        fwrite(&pathLen, sizeof(pathLen), 1, fp);
+        fwrite(favPath.c_str(), sizeof(wchar_t), pathLen, fp);
+    }
+
+    fclose(fp);
+    Utils::Log(L"已保存收藏列表：" + std::to_wstring(count) + L" 项");
+}
+
+// 添加当前激活标签到收藏
+void TabBarWindow::AddCurrentTabToFavorites()
+{
+    if (m_activeIndex < 0 || m_activeIndex >= static_cast<int>(m_tabs.size()))
+    {
+        Utils::Log(L"添加收藏失败：无激活标签");
+        return;
+    }
+
+    const TabItem& tab = m_tabs[m_activeIndex];
+    if (!tab.pidl)
+    {
+        Utils::Log(L"添加收藏失败：标签无 PIDL");
+        return;
+    }
+
+    // 检查是否已存在相同 PIDL 的收藏（去重）
+    for (const auto& fav : m_favorites)
+    {
+        if (fav.pidl && ILIsEqual(fav.pidl, tab.pidl))
+        {
+            Utils::Log(L"收藏已存在：" + tab.title);
+            return;
+        }
+    }
+
+    FavoriteItem fav;
+    fav.title = tab.title;
+    fav.pidl = ExplorerInterface::CopyPidl(tab.pidl);
+    m_favorites.push_back(fav);
+
+    SaveFavorites();
+    Utils::Log(L"已添加收藏：" + tab.title);
+}
+
+// 删除指定索引的收藏项
+void TabBarWindow::RemoveFavorite(int index)
+{
+    if (index < 0 || index >= static_cast<int>(m_favorites.size()))
+        return;
+
+    std::wstring title = m_favorites[index].title;
+    if (m_favorites[index].pidl)
+        ILFree(m_favorites[index].pidl);
+    m_favorites.erase(m_favorites.begin() + index);
+
+    SaveFavorites();
+    Utils::Log(L"已删除收藏：" + title);
+}
+
+// 弹出收藏菜单（点击 ☆ 按钮时）
+void TabBarWindow::ShowFavoritesMenu()
+{
+    // 在收藏按钮位置弹出菜单
+    HMENU hMenu = CreatePopupMenu();
+
+    if (m_favorites.empty())
+    {
+        AppendMenuW(hMenu, MF_STRING | MF_DISABLED, 0, L"(无收藏)");
+        AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
+        AppendMenuW(hMenu, MF_STRING, 1001, L"添加当前文件夹到收藏");
+    }
+    else
+    {
+        // 收藏列表（左键点击 = 在新标签打开）
+        for (int i = 0; i < static_cast<int>(m_favorites.size()); i++)
+        {
+            const FavoriteItem& fav = m_favorites[i];
+            std::wstring text = fav.title;
+            if (text.empty())
+                text = L"(无标题)";
+            wchar_t buf[300];
+            swprintf_s(buf, 300, L"%d. %s", i + 1, text.c_str());
+            AppendMenuW(hMenu, MF_STRING, 2000 + i, buf);
+        }
+        AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
+
+        // 添加当前文件夹到收藏
+        AppendMenuW(hMenu, MF_STRING, 1001, L"添加当前文件夹到收藏");
+
+        // 删除收藏子菜单
+        HMENU hDelMenu = CreatePopupMenu();
+        for (int i = 0; i < static_cast<int>(m_favorites.size()); i++)
+        {
+            const FavoriteItem& fav = m_favorites[i];
+            std::wstring text = fav.title;
+            if (text.empty())
+                text = L"(无标题)";
+            wchar_t buf[300];
+            swprintf_s(buf, 300, L"%s", text.c_str());
+            AppendMenuW(hDelMenu, MF_STRING, 5000 + i, buf);
+        }
+        AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hDelMenu), L"删除收藏...");
+    }
+
+    // 获取收藏按钮屏幕坐标
+    int plusX = static_cast<int>(m_tabs.size()) * m_tabWidth;
+    int favX = plusX + kPlusButtonWidth;
+    POINT pt = { favX, m_windowHeight };
+    ClientToScreen(m_hwnd, &pt);
+
+    SetForegroundWindow(m_hwnd);
+
+    int cmd = static_cast<int>(TrackPopupMenu(
+        hMenu,
+        TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RETURNCMD | TPM_RIGHTBUTTON,
+        pt.x, pt.y, 0, m_hwnd, NULL));
+
+    DestroyMenu(hMenu);
+
+    if (cmd == 0)
+    {
+        return; // 用户取消
+    }
+
+    if (cmd == 1001)
+    {
+        AddCurrentTabToFavorites();
+        return;
+    }
+
+    if (cmd >= 5000 && cmd < 6000)
+    {
+        // 删除收藏项
+        int favIndex = cmd - 5000;
+        RemoveFavorite(favIndex);
+        return;
+    }
+
+    if (cmd >= 2000 && cmd < 3000)
+    {
+        // 选择某个收藏项：新建标签并导航
+        int favIndex = cmd - 2000;
+        if (favIndex >= 0 && favIndex < static_cast<int>(m_favorites.size()))
+        {
+            const FavoriteItem& fav = m_favorites[favIndex];
+            AddTab(fav.pidl, fav.title.empty() ? L"收藏" : fav.title);
+        }
+    }
+}
+
+// 弹出标签右键菜单
+void TabBarWindow::ShowTabContextMenu(int tabIndex, int screenX, int screenY)
+{
+    if (tabIndex < 0 || tabIndex >= static_cast<int>(m_tabs.size()))
+        return;
+
+    HMENU hMenu = CreatePopupMenu();
+    AppendMenuW(hMenu, MF_STRING, 3001, L"添加到收藏");
+    AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
+    AppendMenuW(hMenu, MF_STRING, 3002, L"关闭标签");
+
+    SetForegroundWindow(m_hwnd);
+    int cmd = static_cast<int>(TrackPopupMenu(
+        hMenu,
+        TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RETURNCMD | TPM_RIGHTBUTTON,
+        screenX, screenY, 0, m_hwnd, NULL));
+    DestroyMenu(hMenu);
+
+    if (cmd == 3001)
+    {
+        // 添加到收藏：临时激活该标签再添加
+        int oldActive = m_activeIndex;
+        if (tabIndex != m_activeIndex)
+        {
+            ActivateTab(tabIndex);
+        }
+        AddCurrentTabToFavorites();
+        // 不恢复原激活标签（用户可能想看新收藏的文件夹）
+    }
+    else if (cmd == 3002)
+    {
+        CloseTab(tabIndex);
+    }
+}
+
+// 弹出收藏项右键菜单（在收藏菜单中右键某项）
+// 注意：由于 TrackPopupMenu 是模态的，无法在收藏菜单中直接右键单项
+// 改为：在收藏菜单中提供"删除收藏..."选项，弹出二级菜单选择
+// 这里实现一个独立的"删除收藏"菜单
+bool TabBarWindow::ShowFavoriteContextItem(int favoriteIndex, int screenX, int screenY)
+{
+    if (favoriteIndex < 0 || favoriteIndex >= static_cast<int>(m_favorites.size()))
+        return false;
+
+    HMENU hMenu = CreatePopupMenu();
+    AppendMenuW(hMenu, MF_STRING, 4001, L"删除此收藏");
+    AppendMenuW(hMenu, MF_STRING, 4002, L"在新标签打开");
+
+    SetForegroundWindow(m_hwnd);
+    int cmd = static_cast<int>(TrackPopupMenu(
+        hMenu,
+        TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RETURNCMD,
+        screenX, screenY, 0, m_hwnd, NULL));
+    DestroyMenu(hMenu);
+
+    if (cmd == 4001)
+    {
+        RemoveFavorite(favoriteIndex);
+        return true;
+    }
+    else if (cmd == 4002)
+    {
+        const FavoriteItem& fav = m_favorites[favoriteIndex];
+        AddTab(fav.pidl, fav.title.empty() ? L"收藏" : fav.title);
+    }
+    return false;
 }
