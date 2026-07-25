@@ -46,6 +46,24 @@ public sealed class FavoritesService
         {
             AddDefaults();
         }
+        else
+        {
+            // 迁移：已有用户补充新增的默认项"网络"（点击在内部浏览网络计算机）
+            EnsureDefaultItem("网络", "shell:::{F02C1A0D-BE21-4350-88B0-7447BC5800D3}", "常用");
+        }
+    }
+
+    /// <summary>
+    /// 确保指定默认项存在，缺失则补充（用于已有用户的平滑迁移）
+    /// </summary>
+    private void EnsureDefaultItem(string name, string path, string group)
+    {
+        lock (_lock)
+        {
+            if (_items.Any(x => x.Path.Equals(path, StringComparison.OrdinalIgnoreCase))) return;
+            _items.Add(new FavoriteItem { Name = name, Path = path, Group = group });
+        }
+        Save();
     }
 
     private void Load()
@@ -91,11 +109,13 @@ public sealed class FavoritesService
             ("图片", Environment.GetFolderPath(Environment.SpecialFolder.MyPictures)),
             ("音乐", Environment.GetFolderPath(Environment.SpecialFolder.MyMusic)),
             ("视频", Environment.GetFolderPath(Environment.SpecialFolder.MyVideos)),
-            ("此电脑", "ThisPC")
+            ("此电脑", "ThisPC"),
+            // 网络：Shell 命名空间 CLSID，点击在内部浏览网络中的计算机
+            ("网络", "shell:::{F02C1A0D-BE21-4350-88B0-7447BC5800D3}")
         };
         foreach (var (name, path) in defaults)
         {
-            if (!string.IsNullOrEmpty(path) && path != "ThisPC" && !Directory.Exists(path)) continue;
+            if (!string.IsNullOrEmpty(path) && path != "ThisPC" && !path.StartsWith("shell::", StringComparison.Ordinal) && !Directory.Exists(path)) continue;
             _items.Add(new FavoriteItem { Name = name, Path = path, Group = "常用" });
         }
         // 系统磁盘

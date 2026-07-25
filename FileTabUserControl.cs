@@ -49,6 +49,8 @@ public sealed class FileTabUserControl : UserControl
     public event EventHandler? FavoriteStateChanged;
 
     public string CurrentPath => _currentPath;
+    /// <summary>当前路径的友好显示名称（用于标签页标题、收藏夹命名）</summary>
+    public string CurrentDisplayName => GetCurrentDisplayName();
     public ListView.ListViewItemCollection Items => _listView.Items;
 
     public FileTabUserControl(AppSettings settings, FavoritesService favorites)
@@ -130,6 +132,9 @@ public sealed class FileTabUserControl : UserControl
 
         _addressBar.Controls.Add(_crumbsHost);
         _addressBar.Controls.Add(_addressEdit);
+        // 单击地址栏空白处或面包屑也可进入编辑模式（更易发现）
+        _addressBar.Click += (_, _) => EnterAddressEditMode();
+        _crumbsHost.Click += (_, _) => EnterAddressEditMode();
         // 双击地址栏切换文本编辑模式
         _addressBar.DoubleClick += (_, _) => EnterAddressEditMode();
 
@@ -231,9 +236,18 @@ public sealed class FileTabUserControl : UserControl
             if (e.Button == MouseButtons.Left)
             {
                 var info = _listView.HitTest(e.Location);
-                if (info.Item is not null && info.Item.Tag is FileSystemInfo fsi)
+                if (info.Item?.Tag is FileSystemInfo fsi)
                 {
                     OpenFileSystemInfo(fsi);
+                }
+                else if (info.Item?.Tag is ShellItem si)
+                {
+                    // 控制面板入口项：导航到控制面板
+                    if (si.Path == "ControlPanel") NavigateTo("ControlPanel");
+                    // 可浏览的 Shell 文件夹：导航进入显示子项
+                    else if (si.IsBrowsable && !string.IsNullOrEmpty(si.Path)) NavigateToShellFolder(si.Path, si.Name);
+                    // 普通控制面板项：外部启动
+                    else ShellService.LaunchItem(si);
                 }
             }
         };
@@ -241,8 +255,17 @@ public sealed class FileTabUserControl : UserControl
         {
             if (e.KeyCode == Keys.Enter)
             {
-                if (_listView.SelectedItems.Count > 0 && _listView.SelectedItems[0].Tag is FileSystemInfo fsi)
-                    OpenFileSystemInfo(fsi);
+                if (_listView.SelectedItems.Count > 0)
+                {
+                    var tag = _listView.SelectedItems[0].Tag;
+                    if (tag is FileSystemInfo fsi) OpenFileSystemInfo(fsi);
+                    else if (tag is ShellItem si)
+                    {
+                        if (si.Path == "ControlPanel") NavigateTo("ControlPanel");
+                        else if (si.IsBrowsable && !string.IsNullOrEmpty(si.Path)) NavigateToShellFolder(si.Path, si.Name);
+                        else ShellService.LaunchItem(si);
+                    }
+                }
             }
             else if (e.KeyCode == Keys.Back)
             {
@@ -316,7 +339,79 @@ public sealed class FileTabUserControl : UserControl
             NavigateToThisPC();
             return;
         }
+        if (path == "ControlPanel")
+        {
+            NavigateToControlPanel();
+            return;
+        }
+        // Shell 文件夹路径（如 shell:::{CLSID}）：可浏览则导航，不可浏览则外部启动
+        // 兼容两种历史写法：shell:::{CLSID}（3冒号）和 shell::::{CLSID}（4冒号），统一归一化为 ::{CLSID}
+        if (path.StartsWith("shell::", StringComparison.Ordinal))
+        {
+            string shellPath = "::" + path.Substring("shell::".Length).TrimStart(':');
+            var items = ShellService.EnumerateShellFolder(shellPath);
+            if (items.Count > 0)
+            {
+                string name = ShellService.GetShellFolderDisplayName(shellPath) ?? shellPath;
+                NavigateToShellFolder(shellPath, name, items);
+            }
+            else
+            {
+                // 子项为空时，用 NameSpace 是否可打开来区分：
+                //   可打开（如"网络"无其他计算机）→ 内部显示空列表
+                //   不可打开（如"网络和共享中心"任务页面）→ 外部启动 + 内部显示提示
+                string? folderName = ShellService.GetShellFolderDisplayName(shellPath);
+                if (folderName is not null)
+                {
+                    NavigateToShellFolder(shellPath, folderName, items);
+                }
+                else
+                {
+                    // 不可浏览的任务页面型 Shell 项：外部启动，内部显示提示项
+                    ShellService.LaunchItem(new ShellItem { Path = shellPath, Name = shellPath });
+                    ShowShellNotBrowsablePlaceholder(shellPath);
+                }
+            }
+            return;
+        }
         TryNavigate(path);
+    }
+
+    /// <summary>
+    /// 不可浏览的 Shell 项（如"网络和共享中心"任务页面）外部启动后，内部显示提示项
+    /// </summary>
+    private void ShowShellNotBrowsablePlaceholder(string shellPath)
+    {
+        ResetSearchBox();
+        _listView.Items.Clear();
+        _listView.BeginUpdate();
+        try
+        {
+            var hint = new ListViewItem("此项目为任务页面，已在外部资源管理器打开")
+            {
+                Tag = null,
+                ImageKey = "shell",
+                ForeColor = Theme.FgSecondary
+            };
+            hint.SubItems.Add("");
+            hint.SubItems.Add("提示");
+            hint.SubItems.Add("无法在此处显示内容，请使用外部窗口");
+            _listView.Items.Add(hint);
+        }
+        finally
+        {
+            _listView.EndUpdate();
+        }
+        // 推入后退栈，记录当前路径（允许右键收藏当前目录）
+        if (!string.IsNullOrEmpty(_currentPath) && _currentPath != shellPath)
+        {
+            _backStack.Add(_currentPath);
+            _forwardStack.Clear();
+        }
+        _currentPath = "shell::" + shellPath;
+        UpdateCrumbsForShellFolder(GetCurrentDisplayName());
+        _statusBar.Text = $"  此为任务页面，内容已在外部打开    |    {_currentPath}";
+        PathChanged?.Invoke(this, _currentPath);
     }
 
     private void NavigateToThisPC()
@@ -359,6 +454,17 @@ public sealed class FileTabUserControl : UserControl
                 catch { item.SubItems.Add(""); }
                 _listView.Items.Add(item);
             }
+
+            // 添加"控制面板"入口项，方便从"此电脑"进入
+            var cpItem = new ListViewItem("控制面板")
+            {
+                Tag = new ShellItem { Name = "控制面板", Path = "ControlPanel", Type = "系统", IsFolder = false },
+                ImageKey = "folder"
+            };
+            cpItem.SubItems.Add("");
+            cpItem.SubItems.Add("系统文件夹");
+            cpItem.SubItems.Add("");
+            _listView.Items.Add(cpItem);
         }
         finally { _listView.EndUpdate(); }
 
@@ -368,12 +474,224 @@ public sealed class FileTabUserControl : UserControl
         PathChanged?.Invoke(this, _currentPath);
     }
 
+    /// <summary>
+    /// 导航到控制面板：枚举控制面板项并显示
+    /// </summary>
+    private void NavigateToControlPanel()
+    {
+        ResetSearchBox();
+
+        // 推入后退栈
+        if (!string.IsNullOrEmpty(_currentPath) && _currentPath != "ControlPanel")
+        {
+            _backStack.Add(_currentPath);
+            _forwardStack.Clear();
+        }
+
+        _listView.Items.Clear();
+        _listView.BeginUpdate();
+        try
+        {
+            var items = ShellService.EnumerateControlPanel();
+            items.Sort((a, b) => string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase));
+            foreach (var si in items)
+            {
+                var item = new ListViewItem(si.Name)
+                {
+                    Tag = si,
+                    ImageKey = "folder"
+                };
+                item.SubItems.Add("");
+                item.SubItems.Add(si.Type);
+                item.SubItems.Add("");
+                _listView.Items.Add(item);
+            }
+        }
+        finally { _listView.EndUpdate(); }
+
+        _currentPath = "ControlPanel";
+        UpdateCrumbsForControlPanel();
+        UpdateStatusBar();
+        PathChanged?.Invoke(this, _currentPath);
+    }
+
+    /// <summary>
+    /// 控制面板的面包屑
+    /// </summary>
+    private void UpdateCrumbsForControlPanel()
+    {
+        _crumbsHost.Controls.Clear();
+        _crumbsHost.Controls.Add(CreateCrumb("此电脑", "ThisPC"));
+
+        // 分隔符 >
+        var sep = new Label
+        {
+            Text = "›",
+            AutoSize = false,
+            Size = new Size(14, 20),
+            Location = new Point(60, 3),
+            Font = Theme.GetUiFont(10),
+            ForeColor = Theme.FgSecondary,
+            TextAlign = ContentAlignment.MiddleCenter
+        };
+        _crumbsHost.Controls.Add(sep);
+
+        var crumb = CreateCrumb("控制面板", "ControlPanel");
+        crumb.Location = new Point(74, 3);
+        _crumbsHost.Controls.Add(crumb);
+    }
+
+    /// <summary>
+    /// 导航到任意 Shell 文件夹（如网络连接），显示其子项
+    /// </summary>
+    private void NavigateToShellFolder(string shellPath, string displayName)
+    {
+        var items = ShellService.EnumerateShellFolder(shellPath);
+        NavigateToShellFolder(shellPath, displayName, items);
+    }
+
+    /// <summary>
+    /// 导航到任意 Shell 文件夹，使用预枚举的子项列表
+    /// </summary>
+    private void NavigateToShellFolder(string shellPath, string displayName, List<ShellItem> items)
+    {
+        ResetSearchBox();
+
+        // 推入后退栈
+        string newKey = "shell::" + shellPath;
+        if (!string.IsNullOrEmpty(_currentPath) && _currentPath != newKey)
+        {
+            _backStack.Add(_currentPath);
+            _forwardStack.Clear();
+        }
+
+        _listView.Items.Clear();
+        _listView.BeginUpdate();
+        try
+        {
+            items.Sort((a, b) => string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase));
+            foreach (var si in items)
+            {
+                var item = new ListViewItem(si.Name)
+                {
+                    Tag = si,
+                    ImageKey = si.IsFolder ? "folder" : "file"
+                };
+                item.SubItems.Add("");
+                item.SubItems.Add(si.Type);
+                item.SubItems.Add("");
+                _listView.Items.Add(item);
+            }
+        }
+        finally { _listView.EndUpdate(); }
+
+        _currentPath = newKey;
+        UpdateCrumbsForShellFolder(displayName);
+        UpdateStatusBar();
+        PathChanged?.Invoke(this, _currentPath);
+    }
+
+    /// <summary>
+    /// Shell 文件夹的面包屑：此电脑 › 控制面板 › 当前文件夹
+    /// </summary>
+    private void UpdateCrumbsForShellFolder(string displayName)
+    {
+        _crumbsHost.Controls.Clear();
+        int x = 3;
+
+        var crumb1 = CreateCrumb("此电脑", "ThisPC");
+        crumb1.Location = new Point(x, 3);
+        _crumbsHost.Controls.Add(crumb1);
+        x += crumb1.PreferredWidth + 4;
+
+        var sep1 = new Label
+        {
+            Text = "›",
+            AutoSize = false,
+            Size = new Size(14, 20),
+            Location = new Point(x, 3),
+            Font = Theme.GetUiFont(10),
+            ForeColor = Theme.FgSecondary,
+            TextAlign = ContentAlignment.MiddleCenter
+        };
+        _crumbsHost.Controls.Add(sep1);
+        x += 14;
+
+        var crumb2 = CreateCrumb("控制面板", "ControlPanel");
+        crumb2.Location = new Point(x, 3);
+        _crumbsHost.Controls.Add(crumb2);
+        x += crumb2.PreferredWidth + 4;
+
+        var sep2 = new Label
+        {
+            Text = "›",
+            AutoSize = false,
+            Size = new Size(14, 20),
+            Location = new Point(x, 3),
+            Font = Theme.GetUiFont(10),
+            ForeColor = Theme.FgSecondary,
+            TextAlign = ContentAlignment.MiddleCenter
+        };
+        _crumbsHost.Controls.Add(sep2);
+        x += 14;
+
+        var crumb3 = new LinkLabel
+        {
+            Text = displayName,
+            AutoSize = true,
+            Font = Theme.GetUiFont(9),
+            LinkColor = Theme.FgMain,
+            VisitedLinkColor = Theme.FgMain,
+            LinkBehavior = LinkBehavior.HoverUnderline,
+            Padding = new Padding(2, 2, 2, 2),
+            Location = new Point(x, 3)
+        };
+        _crumbsHost.Controls.Add(crumb3);
+    }
+
     private void TryNavigate(string path)
     {
         try
         {
             if (string.IsNullOrEmpty(path)) return;
             path = path.Trim('"', ' ');
+
+            // 支持输入"控制面板"跳转
+            if (path == "控制面板" || path == "ControlPanel")
+            {
+                NavigateToControlPanel();
+                return;
+            }
+
+            // 支持控制面板子路径，如"控制面板\网络和 Internet\网络连接"
+            // 也兼容"控制面板\所有控制面板项\网络和共享中心"（ResolveControlPanelPath 会跳过"所有控制面板项"段）
+            if (path.StartsWith("控制面板\\", StringComparison.OrdinalIgnoreCase) ||
+                path.StartsWith("ControlPanel\\", StringComparison.OrdinalIgnoreCase))
+            {
+                int sep = path.IndexOf('\\');
+                string relativePath = path.Substring(sep + 1);
+                var resolved = ShellService.ResolveControlPanelPath(relativePath);
+                if (resolved is not null)
+                {
+                    // 交给 NavigateTo 统一处理：可浏览则内部浏览，不可浏览则外部启动
+                    NavigateTo("shell::" + resolved.Value.ShellPath);
+                }
+                else
+                {
+                    MessageBox.Show($"在控制面板中未找到：\n{relativePath}", "提示",
+                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+                return;
+            }
+
+            // 粘贴的 Shell GUID 路径，如 ::{CLSID} 或 ::{26EE0668-...}\0\::{8E908FC9-...}
+            // 这种路径不是文件系统目录，Directory.Exists 会返回 false，需交给 Shell 处理
+            if (path.StartsWith("::", StringComparison.Ordinal))
+            {
+                NavigateTo("shell::" + path);
+                return;
+            }
+
             if (!Directory.Exists(path))
             {
                 MessageBox.Show($"路径不存在：\n{path}", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
@@ -585,6 +903,11 @@ public sealed class FileTabUserControl : UserControl
         {
             if (item.Tag is DirectoryInfo) folders++;
             else if (item.Tag is FileInfo) files++;
+            else if (item.Tag is ShellItem si)
+            {
+                if (si.IsFolder || si.IsBrowsable) folders++;
+                else files++;
+            }
         }
         _statusBar.Text = $"  {folders} 个文件夹，{files} 个文件    |    {_currentPath}";
     }
@@ -613,6 +936,40 @@ public sealed class FileTabUserControl : UserControl
         }
     }
 
+    /// <summary>
+    /// 打开 Shell 项：可浏览的导航进入，否则外部启动
+    /// </summary>
+    private void OpenShellItem(ShellItem si)
+    {
+        if (si.Path == "ControlPanel") NavigateTo("ControlPanel");
+        else if (si.IsBrowsable && !string.IsNullOrEmpty(si.Path))
+            NavigateToShellFolder(si.Path, si.Name);
+        else ShellService.LaunchItem(si);
+    }
+
+    /// <summary>
+    /// 获取当前路径的友好显示名称（用于收藏夹命名）
+    /// 控制面板/Shell 文件夹从面包屑最后一个控件提取，普通目录用目录名
+    /// </summary>
+    private string GetCurrentDisplayName()
+    {
+        if (_currentPath == "ThisPC") return "此电脑";
+        if (_currentPath == "ControlPanel") return "控制面板";
+        if (_currentPath.StartsWith("shell::", StringComparison.Ordinal))
+        {
+            // 从面包屑最后一个 LinkLabel 提取友好名称
+            for (int i = _crumbsHost.Controls.Count - 1; i >= 0; i--)
+            {
+                if (_crumbsHost.Controls[i] is LinkLabel ll && !string.IsNullOrEmpty(ll.Text))
+                    return ll.Text;
+            }
+            return _currentPath;
+        }
+        string name = Path.GetFileName(_currentPath);
+        if (string.IsNullOrEmpty(name)) name = _currentPath.TrimEnd('\\');
+        return name;
+    }
+
     public void GoBack()
     {
         if (_backStack.Count == 0) return;
@@ -620,13 +977,7 @@ public sealed class FileTabUserControl : UserControl
         _backStack.RemoveAt(_backStack.Count - 1);
         if (!string.IsNullOrEmpty(_currentPath)) _forwardStack.Add(_currentPath);
         _currentPath = "";
-        // 后退到"此电脑"需加载驱动器列表，否则按目录加载
-        if (prev == "ThisPC") NavigateToThisPC();
-        else LoadDirectory(prev);
-        _currentPath = prev;
-        UpdateCrumbs(prev);
-        UpdateStatusBar();
-        PathChanged?.Invoke(this, _currentPath);
+        RestoreNavigation(prev);
     }
 
     public void GoForward()
@@ -636,11 +987,44 @@ public sealed class FileTabUserControl : UserControl
         _forwardStack.RemoveAt(_forwardStack.Count - 1);
         if (!string.IsNullOrEmpty(_currentPath)) _backStack.Add(_currentPath);
         _currentPath = "";
-        // 前进到"此电脑"需加载驱动器列表，否则按目录加载
-        if (next == "ThisPC") NavigateToThisPC();
-        else LoadDirectory(next);
-        _currentPath = next;
-        UpdateCrumbs(next);
+        RestoreNavigation(next);
+    }
+
+    /// <summary>
+    /// 根据路径类型恢复导航状态（此电脑/控制面板/Shell 文件夹/普通目录）
+    /// </summary>
+    private void RestoreNavigation(string path)
+    {
+        if (path == "ThisPC") NavigateToThisPC();
+        else if (path == "ControlPanel") NavigateToControlPanel();
+        else if (path.StartsWith("shell::", StringComparison.Ordinal))
+        {
+            string shellPath = path.Substring(7);
+            var items = ShellService.EnumerateShellFolder(shellPath);
+            _listView.Items.Clear();
+            _listView.BeginUpdate();
+            try
+            {
+                items.Sort((a, b) => string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase));
+                foreach (var si in items)
+                {
+                    var item = new ListViewItem(si.Name) { Tag = si, ImageKey = si.IsFolder ? "folder" : "file" };
+                    item.SubItems.Add("");
+                    item.SubItems.Add(si.Type);
+                    item.SubItems.Add("");
+                    _listView.Items.Add(item);
+                }
+            }
+            finally { _listView.EndUpdate(); }
+            _currentPath = path;
+            UpdateCrumbsForShellFolder(shellPath);
+        }
+        else
+        {
+            LoadDirectory(path);
+            _currentPath = path;
+            UpdateCrumbs(path);
+        }
         UpdateStatusBar();
         PathChanged?.Invoke(this, _currentPath);
     }
@@ -648,6 +1032,10 @@ public sealed class FileTabUserControl : UserControl
     public void GoUp()
     {
         if (string.IsNullOrEmpty(_currentPath) || _currentPath == "ThisPC") return;
+        // 控制面板上一级 = 此电脑
+        if (_currentPath == "ControlPanel") { NavigateToThisPC(); return; }
+        // Shell 文件夹上一级 = 控制面板
+        if (_currentPath.StartsWith("shell::", StringComparison.Ordinal)) { NavigateTo("ControlPanel"); return; }
         try
         {
             var parent = Directory.GetParent(_currentPath);
@@ -1075,6 +1463,7 @@ public sealed class FileTabUserControl : UserControl
             openItem.Click += (_, _) =>
             {
                 if (hit.Item?.Tag is FileSystemInfo fsi) OpenFileSystemInfo(fsi);
+                else if (hit.Item?.Tag is ShellItem si) OpenShellItem(si);
             };
 
             var copyPath = menu.Items.Add("复制路径");
@@ -1082,9 +1471,11 @@ public sealed class FileTabUserControl : UserControl
             {
                 if (hit.Item?.Tag is FileSystemInfo fsi)
                     Clipboard.SetText(fsi.FullName);
+                else if (hit.Item?.Tag is ShellItem si)
+                    Clipboard.SetText(si.Path);
             };
 
-            // 添加到收藏夹（仅文件夹）
+            // 添加到收藏夹（文件夹或 Shell 项）
             if (hit.Item?.Tag is DirectoryInfo di)
             {
                 bool isFav = _favorites.IsFavorite(di.FullName);
@@ -1096,14 +1487,30 @@ public sealed class FileTabUserControl : UserControl
                     FavoriteStateChanged?.Invoke(this, EventArgs.Empty);
                 };
             }
-
-            menu.Items.Add("-");
-            var del = menu.Items.Add("删除");
-            del.Click += (_, _) =>
+            else if (hit.Item?.Tag is ShellItem si)
             {
-                if (hit.Item?.Tag is FileSystemInfo fsi)
-                    DeleteFileSystemInfo(fsi);
-            };
+                string favPath = "shell::" + si.Path;
+                bool isFav = _favorites.IsFavorite(favPath);
+                var favItem = menu.Items.Add(isFav ? "从收藏夹移除" : "添加到收藏夹");
+                favItem.Click += (_, _) =>
+                {
+                    if (isFav) _favorites.Remove(favPath);
+                    else _favorites.Add(new FavoriteItem { Name = si.Name, Path = favPath, Group = "自定义" });
+                    FavoriteStateChanged?.Invoke(this, EventArgs.Empty);
+                };
+            }
+
+            // 删除仅对文件系统对象有效
+            if (hit.Item?.Tag is FileSystemInfo)
+            {
+                menu.Items.Add("-");
+                var del = menu.Items.Add("删除");
+                del.Click += (_, _) =>
+                {
+                    if (hit.Item?.Tag is FileSystemInfo fsi)
+                        DeleteFileSystemInfo(fsi);
+                };
+            }
         }
         else
         {
@@ -1124,7 +1531,11 @@ public sealed class FileTabUserControl : UserControl
             {
                 if (_currentPath == "ThisPC") return;
                 if (curIsFav) _favorites.Remove(_currentPath);
-                else _favorites.Add(new FavoriteItem { Name = Path.GetFileName(_currentPath), Path = _currentPath, Group = "自定义" });
+                else
+                {
+                    string name = GetCurrentDisplayName();
+                    _favorites.Add(new FavoriteItem { Name = name, Path = _currentPath, Group = "自定义" });
+                }
                 FavoriteStateChanged?.Invoke(this, EventArgs.Empty);
             };
 

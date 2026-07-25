@@ -217,7 +217,8 @@ public sealed class MainForm : Form
         var content = new FileTabUserControl(_settings, _favorites);
         content.PathChanged += (_, p) =>
         {
-            page.Text = GetTabTitle(p);
+            // 用友好显示名作为标签页标题（Shell 文件夹显示中文名，而非 CLSID）
+            page.Text = content.CurrentDisplayName;
             if (!string.IsNullOrEmpty(p) && p != "ThisPC")
             {
                 _session.AddRecent(p);
@@ -244,6 +245,12 @@ public sealed class MainForm : Form
     private static string GetTabTitle(string path)
     {
         if (string.IsNullOrEmpty(path) || path == "ThisPC") return "此电脑";
+        if (path == "ControlPanel") return "控制面板";
+        if (path.StartsWith("shell::", StringComparison.Ordinal))
+        {
+            // Shell 路径：标题暂用占位，PathChanged 事件会更新为友好名
+            return "Shell";
+        }
         try
         {
             return System.IO.Path.GetFileName(path);
@@ -298,8 +305,7 @@ public sealed class MainForm : Form
                 }
                 else
                 {
-                    string name = System.IO.Path.GetFileName(path);
-                    if (string.IsNullOrEmpty(name)) name = path.TrimEnd('\\');
+                    string name = content.CurrentDisplayName;
                     _favorites.Add(new FavoriteItem { Name = name, Path = path, Group = "自定义" });
                 }
             };
