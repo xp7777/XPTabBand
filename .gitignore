@@ -361,3 +361,76 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+
+# ============================================================
+# 项目特定规则
+# ============================================================
+
+# 编译产物目录（DLL/EXE 输出）
+XPTabCpp/XPTabBand/build/
+XPTabCpp/XPTabInject/build/
+XPTabCpp/build/
+XPTabCpp/installer/Output/
+build/
+
+# 调试用 PowerShell 脚本（一次性诊断工具，不属于源码）
+XPTab/check*.ps1
+XPTab/test*.ps1
+XPTab/run_ildasm.ps1
+XPTab/show_band.ps1
+XPTab/takeown_cat.ps1
+XPTab/try_bho.ps1
+XPTab/enable_*.ps1
+XPTab/register.ps1
+XPTab/unregister.ps1
+XPTab/cleanup_*.ps1
+XPTab/rebuild_*.ps1
+XPTab/find_*.ps1
+XPTab/meta.res
+XPTab/meta.txt
+
+# XPTabCpp 临时调试脚本
+XPTabCpp/check_*.ps1
+XPTabCpp/test_*.ps1
+XPTabCpp/run_inject.ps1
+XPTabCpp/screenshot.ps1
+XPTabCpp/restore_and_shot.ps1
+XPTabCpp/open_and_check.ps1
+XPTabCpp/restart_and_inject.ps1
+XPTabCpp/cleanup_band_registry.ps1
+XPTabCpp/find_band_reg.ps1
+XPTabCpp/find_explorer.ps1
+XPTabCpp/enum_children.ps1
+XPTabCpp/dl_*.ps1
+XPTabCpp/install_minhook.ps1
+XPTabCpp/activate_*.ps1
+XPTabCpp/close_cabinets.ps1
+XPTabCpp/clear_logs.ps1
+XPTabCpp/register_*.ps1
+XPTabCpp/register_*.bat
+
+# 临时调试输出文件
+XPTabCpp/build/debug_trace.txt
+XPTabCpp/build/inject_output.txt
+XPTabCpp/build/*.png
+XPTabCpp/build/*.ps1
+XPTabCpp/build/run_inject.bat
+check_desktop_out.txt
+
+# 根目录临时脚本（不属于 XPTabCpp 项目）
+check_desktop.ps1
+check_state.ps1
+diag_thispc.ps1
+fix_shell.ps1
+fix_shell_default.bat
+fix_thispc.ps1
+fix_thispc2.ps1
+
+# 日志文件
+XPTabBand_log.txt
+*_log.txt
+*.log.txt
+
+# 旧的 C# XPTab 临时输出（保留源码，排除产物）
+XPTab/meta.res
+XPTab/meta.txt
