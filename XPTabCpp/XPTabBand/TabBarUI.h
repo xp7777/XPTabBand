@@ -25,6 +25,15 @@ struct TabItemUI
     }
 };
 
+// 收藏夹项
+struct FavoriteItem
+{
+    std::wstring title;   // 显示名称
+    LPITEMIDLIST pidl;    // 文件夹 PIDL（深拷贝，CoTaskMemAlloc 分配）
+
+    FavoriteItem() : pidl(NULL) {}
+};
+
 class TabBarUI
 {
 public:
@@ -50,6 +59,7 @@ public:
     static LPITEMIDLIST GetCurrentPidlEx(IWebBrowser2* pBrowser);
     static LPITEMIDLIST GetSpecialFolderPidl(int csidl);
     static bool NavigateToPidl(IWebBrowser2* pBrowser, LPCITEMIDLIST pidl);
+    static bool BrowseObjectPidl(IWebBrowser2* pBrowser, LPCITEMIDLIST pidl);
     static std::wstring GetCurrentFolderName(IWebBrowser2* pBrowser);
 
 private:
@@ -65,6 +75,10 @@ private:
     // 鼠标悬停状态
     int m_hoverTab;     // 鼠标悬停的标签索引（-1 表示无）
     int m_hoverButton;  // 鼠标悬停的按钮（HIT_*）
+
+    // 收藏夹
+    std::vector<FavoriteItem> m_favorites;
+    bool m_favoritesLoaded;
 
     // 命中测试常量
     static const int HIT_NONE = -3;
@@ -105,4 +119,12 @@ private:
     int HitTest(int x, int y, int* outTabIndex);
     void OnPaint();
     void CreateInitialTab();
+
+    // 收藏夹方法
+    void LoadFavorites();
+    void SaveFavorites();
+    void AddCurrentToFavorites();
+    void ShowFavoritesMenu(int screenX, int screenY);
+    void FreeAllFavoritePidls();
+    static std::wstring GetFavoritesFilePath();
 };

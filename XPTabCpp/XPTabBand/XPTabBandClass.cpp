@@ -245,7 +245,19 @@ STDMETHODIMP XPTabBandClass::SetSite(IUnknown* pUnkSite)
     }
     else
     {
-        LogFmt(L"未创建 TabBarUI: m_hwnd=NULL");
+        LogFmt(L"未创建 TabBarUI: m_hwnd=NULL（窗口类注册失败）");
+        // 窗口创建失败时，释放已获取的资源，避免后续操作崩溃
+        if (m_pBrowser)
+        {
+            m_pBrowser->Release();
+            m_pBrowser = NULL;
+        }
+        if (m_pSite)
+        {
+            m_pSite->Release();
+            m_pSite = NULL;
+        }
+        return E_FAIL;
     }
 
     return S_OK;
@@ -457,22 +469,63 @@ void XPTabBandClass::RegisterBandClass()
     if (s_classAtom != 0)
         return;
 
+    HMODULE hMod = GetModuleHandleW(NULL);  // 使用 EXE 模块（explorer.exe）
+
+    // 先检查类是否已存在（可能由前一个 Explorer 实例注册，DLL 重载后 s_classAtom 被重置为 0）
+    WNDCLASSEXW wcInfo = { sizeof(wcInfo) };
+    if (GetClassInfoExW(hMod, kBandClassName, &wcInfo))
+    {
+        if (wcInfo.lpfnWndProc == XPTabBandClass::WndProcStatic)
+        {
+            // WndProc 匹配，直接复用已存在的类（用 1 表示类已可用）
+            s_classAtom = 1;
+            LogFmt(L"RegisterBandClass: 类已存在且 WndProc 匹配，复用");
+            return;
+        }
+        // WndProc 不匹配（指向已卸载的旧 DLL），注销后重新注册
+        LogFmt(L"RegisterBandClass: 检测到旧 WndProc=0x%p != 当前=0x%p，尝试注销",
+               wcInfo.lpfnWndProc, XPTabBandClass::WndProcStatic);
+        UnregisterClassW(kBandClassName, hMod);
+    }
+
     WNDCLASSEXW wc = { sizeof(wc) };
     wc.style = CS_HREDRAW | CS_VREDRAW;
     wc.lpfnWndProc = XPTabBandClass::WndProcStatic;
-    wc.hInstance = GetModuleHandleW(NULL);  // 使用 EXE 模块（explorer.exe）
+    wc.hInstance = hMod;
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
     // 使用暗色画刷作为背景，避免 TabBar 初始化前闪白
     wc.hbrBackground = CreateSolidBrush(RGB(30, 30, 30));
     wc.lpszClassName = kBandClassName;
 
+    SetLastError(0);
     s_classAtom = RegisterClassExW(&wc);
-    LogFmt(L"RegisterBandClass atom=%d", s_classAtom);
+    DWORD err = GetLastError();
+    LogFmt(L"RegisterBandClass atom=%d err=%lu", s_classAtom, err);
+
+    // 如果仍然失败，再尝试用 NULL hInstance 查找（兼容旧版本注册方式）
+    if (s_classAtom == 0)
+    {
+        WNDCLASSEXW wcNull = { sizeof(wcNull) };
+        if (GetClassInfoExW(NULL, kBandClassName, &wcNull) &&
+            wcNull.lpfnWndProc == XPTabBandClass::WndProcStatic)
+        {
+            s_classAtom = 1;
+            LogFmt(L"RegisterBandClass: 用 NULL hInstance 找到匹配类，复用");
+        }
+    }
 }
 
 void XPTabBandClass::CreateBandWindow(HWND hwndParent)
 {
     RegisterBandClass();
+
+    // 窗口类注册失败，不能创建窗口
+    if (s_classAtom == 0)
+    {
+        LogFmt(L"CreateBandWindow: 窗口类未注册，跳过创建");
+        m_hwnd = NULL;
+        return;
+    }
 
     // 创建子窗口
     // Explorer 会通过 ShowDW 控制显示

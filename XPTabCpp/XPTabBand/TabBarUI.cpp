@@ -66,6 +66,7 @@ TabBarUI::TabBarUI()
     , m_lastCheckTick(0)
     , m_hoverTab(-1)
     , m_hoverButton(HIT_NONE)
+    , m_favoritesLoaded(false)
 {
 }
 
@@ -94,6 +95,7 @@ void TabBarUI::Uninitialize()
         KillTimer(m_hwnd, kTabBarTimerId);
     }
     FreeAllPidls();
+    FreeAllFavoritePidls();
     m_pBrowser = NULL;
     m_hwnd = NULL;
 }
@@ -213,6 +215,30 @@ bool TabBarUI::NavigateToPidl(IWebBrowser2* pBrowser, LPCITEMIDLIST pidl)
     HRESULT hr = pBrowser->Navigate2(&vPidl, &vFlags, NULL, NULL, NULL);
     VariantClear(&vPidl);
     VariantClear(&vFlags);
+
+    return SUCCEEDED(hr);
+}
+
+// 用 IShellBrowser::BrowseObject 在当前 ShellView 内切换文件夹
+// SBSP_SAMEBROWSER 标志强制在当前浏览器中切换，避免弹出新窗口
+bool TabBarUI::BrowseObjectPidl(IWebBrowser2* pBrowser, LPCITEMIDLIST pidl)
+{
+    if (!pBrowser || !pidl) return false;
+
+    IServiceProvider* pSvc = NULL;
+    if (FAILED(pBrowser->QueryInterface(IID_PPV_ARGS(&pSvc))) || !pSvc)
+        return false;
+
+    IShellBrowser* pShellBrowser = NULL;
+    HRESULT hr = pSvc->QueryService(SID_SShellBrowser, IID_PPV_ARGS(&pShellBrowser));
+    pSvc->Release();
+    if (FAILED(hr) || !pShellBrowser)
+        return false;
+
+    // SBSP_SAMEBROWSER: 在当前浏览器中切换
+    // SBSP_ABSOLUTE: pidl 是绝对 PIDL
+    hr = pShellBrowser->BrowseObject(pidl, SBSP_SAMEBROWSER | SBSP_ABSOLUTE);
+    pShellBrowser->Release();
 
     return SUCCEEDED(hr);
 }
@@ -370,9 +396,15 @@ void TabBarUI::ActivateTab(int index)
     m_activeIndex = index;
 
     // 导航到该标签的 PIDL
+    // 优先使用 BrowseObject（在当前 ShellView 内切换，避免新窗口）
+    // 失败时回退到 Navigate2
     if (m_pBrowser && m_tabs[index].pidl)
     {
-        NavigateToPidl(m_pBrowser, m_tabs[index].pidl);
+        if (!BrowseObjectPidl(m_pBrowser, m_tabs[index].pidl))
+        {
+            Log(L"ActivateTab: BrowseObject 失败，回退到 Navigate2");
+            NavigateToPidl(m_pBrowser, m_tabs[index].pidl);
+        }
     }
 
     InvalidateRect(m_hwnd, NULL, FALSE);
@@ -520,12 +552,34 @@ LRESULT TabBarUI::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam)
         case HIT_CLOSE:
             CloseTab(tabIndex);
             break;
+        case HIT_FAVORITE:
+            // 左键 ☆：把当前文件夹加入收藏
+            AddCurrentToFavorites();
+            break;
         default:
             if (hit >= 0 && hit != m_activeIndex)
                 ActivateTab(hit);
             break;
         }
         return 1;  // 已处理
+    }
+
+    case WM_RBUTTONUP:
+    {
+        int x = GET_X_LPARAM(lParam);
+        int y = GET_Y_LPARAM(lParam);
+        int tabIndex = -1;
+        int hit = HitTest(x, y, &tabIndex);
+
+        if (hit == HIT_NONE)
+        {
+            // 在标签栏空白处右键：弹出收藏夹菜单
+            POINT pt = { x, y };
+            ClientToScreen(m_hwnd, &pt);
+            ShowFavoritesMenu(pt.x, pt.y);
+            return 1;
+        }
+        break;
     }
 
     case WM_MOUSEMOVE:
@@ -636,6 +690,253 @@ void TabBarUI::OnTimerTick()
     }
 
     ILFree(curPidl);
+}
+
+// ====================================================================
+// 收藏夹
+// 文件格式（二进制）：
+//   magic   : 4 bytes "XPFV"
+//   count   : 4 bytes (uint32)
+//   每个 item:
+//     pidl_cb : 4 bytes (uint32, PIDL 字节数，含末尾 2 个 0)
+//     pidl    : pidl_cb bytes
+//     name_len: 4 bytes (uint32, wchar_t 个数，不含末尾 0)
+//     name    : name_len * 2 bytes (UTF-16)
+// ====================================================================
+std::wstring TabBarUI::GetFavoritesFilePath()
+{
+    wchar_t appData[MAX_PATH] = { 0 };
+    if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_APPDATA, NULL, 0, appData)))
+    {
+        std::wstring dir = std::wstring(appData) + L"\\XPTabCpp";
+        CreateDirectoryW(dir.c_str(), NULL);
+        return dir + L"\\favorites.dat";
+    }
+    return L"";
+}
+
+void TabBarUI::FreeAllFavoritePidls()
+{
+    for (auto& fav : m_favorites)
+    {
+        if (fav.pidl)
+        {
+            ILFree(fav.pidl);
+            fav.pidl = NULL;
+        }
+    }
+    m_favorites.clear();
+}
+
+void TabBarUI::LoadFavorites()
+{
+    if (m_favoritesLoaded) return;
+    m_favoritesLoaded = true;
+
+    std::wstring path = GetFavoritesFilePath();
+    if (path.empty()) return;
+
+    FILE* f = nullptr;
+    if (_wfopen_s(&f, path.c_str(), L"rb") != 0 || !f) return;
+
+    char magic[4] = { 0 };
+    if (fread(magic, 1, 4, f) != 4 || memcmp(magic, "XPFV", 4) != 0)
+    {
+        fclose(f);
+        return;
+    }
+
+    uint32_t count = 0;
+    if (fread(&count, 4, 1, f) != 1)
+    {
+        fclose(f);
+        return;
+    }
+
+    for (uint32_t i = 0; i < count && i < 200; i++)
+    {
+        uint32_t pidlCb = 0;
+        if (fread(&pidlCb, 4, 1, f) != 1 || pidlCb == 0 || pidlCb > 64 * 1024)
+            break;
+
+        std::vector<unsigned char> buf(pidlCb);
+        if (fread(buf.data(), 1, pidlCb, f) != pidlCb)
+            break;
+
+        LPITEMIDLIST pidl = reinterpret_cast<LPITEMIDLIST>(CoTaskMemAlloc(pidlCb));
+        if (!pidl) break;
+        memcpy(pidl, buf.data(), pidlCb);
+
+        uint32_t nameLen = 0;
+        if (fread(&nameLen, 4, 1, f) != 1 || nameLen > 1024)
+        {
+            CoTaskMemFree(pidl);
+            break;
+        }
+
+        std::wstring name;
+        if (nameLen > 0)
+        {
+            std::vector<wchar_t> wbuf(nameLen);
+            if (fread(wbuf.data(), 2, nameLen, f) != nameLen)
+            {
+                CoTaskMemFree(pidl);
+                break;
+            }
+            name.assign(wbuf.data(), nameLen);
+        }
+
+        FavoriteItem item;
+        item.title = name;
+        item.pidl = pidl;
+        m_favorites.push_back(item);
+    }
+    fclose(f);
+
+    LogFmt(L"LoadFavorites: 加载 %d 个收藏", (int)m_favorites.size());
+}
+
+void TabBarUI::SaveFavorites()
+{
+    std::wstring path = GetFavoritesFilePath();
+    if (path.empty()) return;
+
+    FILE* f = nullptr;
+    if (_wfopen_s(&f, path.c_str(), L"wb") != 0 || !f) return;
+
+    fwrite("XPFV", 1, 4, f);
+    uint32_t count = (uint32_t)m_favorites.size();
+    fwrite(&count, 4, 1, f);
+
+    for (auto& fav : m_favorites)
+    {
+        uint32_t pidlCb = fav.pidl ? (uint32_t)ILGetSize(fav.pidl) : 0;
+        fwrite(&pidlCb, 4, 1, f);
+        if (pidlCb > 0)
+            fwrite(fav.pidl, 1, pidlCb, f);
+
+        uint32_t nameLen = (uint32_t)fav.title.size();
+        fwrite(&nameLen, 4, 1, f);
+        if (nameLen > 0)
+            fwrite(fav.title.data(), 2, nameLen, f);
+    }
+    fclose(f);
+
+    LogFmt(L"SaveFavorites: 保存 %d 个收藏", (int)m_favorites.size());
+}
+
+void TabBarUI::AddCurrentToFavorites()
+{
+    if (!m_pBrowser) return;
+    LoadFavorites();
+
+    LPITEMIDLIST pidl = SafeGetCurrentPidl(m_pBrowser);
+    if (!pidl)
+    {
+        Log(L"AddCurrentToFavorites: 获取当前 PIDL 失败");
+        return;
+    }
+
+    std::wstring name = GetNameFromPidl(pidl);
+    if (name.empty())
+    {
+        wchar_t nameBuf[MAX_PATH] = { 0 };
+        if (SafeGetFolderName(m_pBrowser, nameBuf, MAX_PATH))
+            name = nameBuf;
+    }
+    if (name.empty())
+        name = L"未知";
+
+    // 查重
+    for (auto& fav : m_favorites)
+    {
+        if (fav.pidl && ILIsEqual(fav.pidl, pidl))
+        {
+            LogFmt(L"AddCurrentToFavorites: 已存在 %s，跳过", name.c_str());
+            ILFree(pidl);
+            return;
+        }
+    }
+
+    FavoriteItem item;
+    item.title = name;
+    item.pidl = pidl;  // 转移所有权
+    m_favorites.push_back(item);
+    SaveFavorites();
+
+    LogFmt(L"AddCurrentToFavorites: 添加 %s (总数=%d)", name.c_str(), (int)m_favorites.size());
+}
+
+void TabBarUI::ShowFavoritesMenu(int screenX, int screenY)
+{
+    LoadFavorites();
+
+    HMENU hMenu = CreatePopupMenu();
+    if (!hMenu) return;
+
+    if (m_favorites.empty())
+    {
+        AppendMenuW(hMenu, MF_STRING | MF_DISABLED, 0, L"（暂无收藏，左键 ☆ 添加）");
+    }
+    else
+    {
+        for (size_t i = 0; i < m_favorites.size(); i++)
+        {
+            AppendMenuW(hMenu, MF_STRING, (UINT_PTR)(i + 1), m_favorites[i].title.c_str());
+        }
+        AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
+        AppendMenuW(hMenu, MF_STRING, 0xFFFE, L"打开收藏夹文件夹");
+        AppendMenuW(hMenu, MF_STRING, 0xFFFD, L"清空收藏夹");
+    }
+
+    // 用 TPM_RETURNCMD 直接拿到选择的 ID
+    int cmd = TrackPopupMenu(
+        hMenu,
+        TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RETURNCMD | TPM_NONOTIFY,
+        screenX, screenY, 0, m_hwnd, NULL);
+
+    DestroyMenu(hMenu);
+
+    if (cmd == 0)
+        return;
+
+    if (cmd == 0xFFFE)
+    {
+        // 打开收藏夹所在文件夹
+        std::wstring path = GetFavoritesFilePath();
+        if (!path.empty())
+        {
+            size_t pos = path.find_last_of(L"\\");
+            if (pos != std::wstring::npos)
+            {
+                std::wstring dir = path.substr(0, pos);
+                ShellExecuteW(NULL, L"open", L"explorer.exe", dir.c_str(), NULL, SW_SHOWNORMAL);
+            }
+        }
+        return;
+    }
+
+    if (cmd == 0xFFFD)
+    {
+        // 清空收藏夹
+        FreeAllFavoritePidls();
+        SaveFavorites();
+        Log(L"ShowFavoritesMenu: 已清空收藏夹");
+        return;
+    }
+
+    // cmd 是 1-based 索引
+    int idx = cmd - 1;
+    if (idx >= 0 && idx < (int)m_favorites.size())
+    {
+        FavoriteItem& fav = m_favorites[idx];
+        if (fav.pidl)
+        {
+            // 在新标签打开（AddTab 会拷贝 PIDL 并激活）
+            AddTab(fav.pidl, fav.title);
+            LogFmt(L"ShowFavoritesMenu: 新标签打开 %s", fav.title.c_str());
+        }
+    }
 }
 
 // ====================================================================
