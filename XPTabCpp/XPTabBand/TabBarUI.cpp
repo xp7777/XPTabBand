@@ -875,70 +875,214 @@ void TabBarUI::ShowFavoritesMenu(int screenX, int screenY)
 {
     LoadFavorites();
 
-    HMENU hMenu = CreatePopupMenu();
-    if (!hMenu) return;
+    // 命令 ID 编码：
+    //   0x1000 + i          : 在新标签打开第 i 个收藏（顶层点击）
+    //   0x2000 + i*3        : 管理子菜单 - 上移第 i 个
+    //   0x2000 + i*3 + 1    : 管理子菜单 - 下移第 i 个
+    //   0x2000 + i*3 + 2    : 管理子菜单 - 删除第 i 个
+    //   0xFFFD              : 清空收藏夹
+    const UINT kCmdOpenBase   = 0x1000;
+    const UINT kCmdMgmtBase   = 0x2000;
+    const UINT kCmdClear      = 0xFFFD;
 
-    if (m_favorites.empty())
-    {
-        AppendMenuW(hMenu, MF_STRING | MF_DISABLED, 0, L"（暂无收藏，左键 ☆ 添加）");
-    }
-    else
-    {
+    // 构建主菜单
+    auto buildMainMenu = [&]() -> HMENU {
+        HMENU hMenu = CreatePopupMenu();
+        if (!hMenu) return NULL;
+
+        if (m_favorites.empty())
+        {
+            AppendMenuW(hMenu, MF_STRING | MF_DISABLED, 0, L"（暂无收藏，左键 ☆ 添加）");
+            return hMenu;
+        }
+
         for (size_t i = 0; i < m_favorites.size(); i++)
         {
-            AppendMenuW(hMenu, MF_STRING, (UINT_PTR)(i + 1), m_favorites[i].title.c_str());
+            AppendMenuW(hMenu, MF_STRING, kCmdOpenBase + (UINT)i,
+                       m_favorites[i].title.c_str());
         }
         AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
-        AppendMenuW(hMenu, MF_STRING, 0xFFFE, L"打开收藏夹文件夹");
-        AppendMenuW(hMenu, MF_STRING, 0xFFFD, L"清空收藏夹");
-    }
+        AppendMenuW(hMenu, MF_STRING, 0xFFFB, L"管理收藏夹...");
+        AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
+        AppendMenuW(hMenu, MF_STRING, kCmdClear, L"清空收藏夹");
+        return hMenu;
+    };
 
-    // 用 TPM_RETURNCMD 直接拿到选择的 ID
-    int cmd = TrackPopupMenu(
-        hMenu,
-        TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RETURNCMD | TPM_NONOTIFY,
-        screenX, screenY, 0, m_hwnd, NULL);
+    // 构建收藏夹管理子菜单（独立的弹出菜单）
+    auto buildManageMenu = [&]() -> HMENU {
+        HMENU hManageMenu = CreatePopupMenu();
+        if (!hManageMenu) return NULL;
 
-    DestroyMenu(hMenu);
-
-    if (cmd == 0)
-        return;
-
-    if (cmd == 0xFFFE)
-    {
-        // 打开收藏夹所在文件夹
-        std::wstring path = GetFavoritesFilePath();
-        if (!path.empty())
+        int count = (int)m_favorites.size();
+        for (int i = 0; i < count; i++)
         {
-            size_t pos = path.find_last_of(L"\\");
-            if (pos != std::wstring::npos)
+            if (i > 0)
+                AppendMenuW(hManageMenu, MF_SEPARATOR, 0, NULL);
+
+            // 项标题（不可点击的分组标题）
+            AppendMenuW(hManageMenu, MF_STRING | MF_DISABLED, 0,
+                       m_favorites[i].title.c_str());
+
+            HMENU hItemMenu = CreatePopupMenu();
+            AppendMenuW(hItemMenu, MF_STRING | (i == 0 ? MF_GRAYED : 0),
+                       kCmdMgmtBase + (UINT)i * 3,     L"▲ 上移");
+            AppendMenuW(hItemMenu, MF_STRING | (i == count - 1 ? MF_GRAYED : 0),
+                       kCmdMgmtBase + (UINT)i * 3 + 1, L"▼ 下移");
+            AppendMenuW(hItemMenu, MF_STRING,
+                       kCmdMgmtBase + (UINT)i * 3 + 2, L"× 删除");
+
+            AppendMenuW(hManageMenu, MF_POPUP | MF_STRING,
+                       (UINT_PTR)hItemMenu, L"  操作...");
+        }
+        return hManageMenu;
+    };
+
+    // 处理管理操作的返回值：
+    //   返回值含义：
+    //     -1 = 取消（用户关闭菜单）
+    //      0 = 用户选择"返回主菜单"
+    //      1 = 用户选择"打开某项"，已执行 AddTab
+    //      2 = 用户选择"清空收藏夹"，已执行
+    auto handleManageCmd = [&](int cmd, int& outOpenIdx) -> int {
+        outOpenIdx = -1;
+        if (cmd == 0)
+            return -1;  // 取消
+        if (cmd == 0xFFFC)
+            return 0;   // 返回主菜单
+        if (cmd == (int)kCmdClear)
+        {
+            FreeAllFavoritePidls();
+            SaveFavorites();
+            Log(L"ShowFavoritesMenu: 已清空收藏夹");
+            return 2;
+        }
+        if (cmd >= (int)kCmdMgmtBase)
+        {
+            int offset = cmd - (int)kCmdMgmtBase;
+            int idx = offset / 3;
+            int action = offset % 3;
+
+            if (idx < 0 || idx >= (int)m_favorites.size())
+                return -1;
+
+            if (action == 0 && idx > 0)
             {
-                std::wstring dir = path.substr(0, pos);
-                ShellExecuteW(NULL, L"open", L"explorer.exe", dir.c_str(), NULL, SW_SHOWNORMAL);
+                std::swap(m_favorites[idx], m_favorites[idx - 1]);
+                SaveFavorites();
+                LogFmt(L"ShowFavoritesMenu: 上移 %s", m_favorites[idx - 1].title.c_str());
+            }
+            else if (action == 1 && idx < (int)m_favorites.size() - 1)
+            {
+                std::swap(m_favorites[idx], m_favorites[idx + 1]);
+                SaveFavorites();
+                LogFmt(L"ShowFavoritesMenu: 下移 %s", m_favorites[idx + 1].title.c_str());
+            }
+            else if (action == 2)
+            {
+                std::wstring title = m_favorites[idx].title;
+                if (m_favorites[idx].pidl)
+                {
+                    ILFree(m_favorites[idx].pidl);
+                    m_favorites[idx].pidl = NULL;
+                }
+                m_favorites.erase(m_favorites.begin() + idx);
+                SaveFavorites();
+                LogFmt(L"ShowFavoritesMenu: 删除收藏 %s (剩余=%d)", title.c_str(), (int)m_favorites.size());
+            }
+            return 3;  // 管理操作完成，继续留在管理菜单
+        }
+        return -1;
+    };
+
+    // 主循环：先弹主菜单，进入管理则循环弹管理子菜单
+    enum class Mode { Main, Manage, Exit };
+    Mode mode = Mode::Main;
+
+    while (mode != Mode::Exit)
+    {
+        if (mode == Mode::Main)
+        {
+            HMENU hMenu = buildMainMenu();
+            if (!hMenu) return;
+
+            int cmd = TrackPopupMenu(
+                hMenu,
+                TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RETURNCMD | TPM_NONOTIFY,
+                screenX, screenY, 0, m_hwnd, NULL);
+
+            DestroyMenu(hMenu);
+
+            if (cmd == 0)
+                return;  // 取消
+
+            if (cmd == (int)kCmdClear)
+            {
+                FreeAllFavoritePidls();
+                SaveFavorites();
+                Log(L"ShowFavoritesMenu: 已清空收藏夹");
+                return;
+            }
+
+            // 顶层点击：在新标签打开
+            if (cmd >= (int)kCmdOpenBase && cmd < (int)kCmdMgmtBase)
+            {
+                int idx = cmd - (int)kCmdOpenBase;
+                if (idx >= 0 && idx < (int)m_favorites.size())
+                {
+                    FavoriteItem& fav = m_favorites[idx];
+                    if (fav.pidl)
+                    {
+                        AddTab(fav.pidl, fav.title);
+                        LogFmt(L"ShowFavoritesMenu: 新标签打开 %s", fav.title.c_str());
+                    }
+                }
+                return;
+            }
+
+            // 没有管理菜单入口（旧版本是子菜单入口），现在改为：
+            // 主菜单底部加"管理收藏夹..."项进入管理模式
+            if (cmd == 0xFFFB)
+            {
+                mode = Mode::Manage;
             }
         }
-        return;
-    }
-
-    if (cmd == 0xFFFD)
-    {
-        // 清空收藏夹
-        FreeAllFavoritePidls();
-        SaveFavorites();
-        Log(L"ShowFavoritesMenu: 已清空收藏夹");
-        return;
-    }
-
-    // cmd 是 1-based 索引
-    int idx = cmd - 1;
-    if (idx >= 0 && idx < (int)m_favorites.size())
-    {
-        FavoriteItem& fav = m_favorites[idx];
-        if (fav.pidl)
+        else if (mode == Mode::Manage)
         {
-            // 在新标签打开（AddTab 会拷贝 PIDL 并激活）
-            AddTab(fav.pidl, fav.title);
-            LogFmt(L"ShowFavoritesMenu: 新标签打开 %s", fav.title.c_str());
+            if (m_favorites.empty())
+            {
+                // 没有收藏项可管理，返回主菜单
+                mode = Mode::Main;
+                continue;
+            }
+
+            HMENU hManageMenu = buildManageMenu();
+            if (!hManageMenu)
+            {
+                mode = Mode::Main;
+                continue;
+            }
+
+            // 底部加"返回主菜单"项
+            AppendMenuW(hManageMenu, MF_SEPARATOR, 0, NULL);
+            AppendMenuW(hManageMenu, MF_STRING, 0xFFFC, L"◀ 返回主菜单");
+
+            int cmd = TrackPopupMenu(
+                hManageMenu,
+                TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RETURNCMD | TPM_NONOTIFY,
+                screenX, screenY, 0, m_hwnd, NULL);
+
+            DestroyMenu(hManageMenu);
+
+            int openIdx = -1;
+            int result = handleManageCmd(cmd, openIdx);
+
+            if (result == -1)
+                return;  // 取消
+            if (result == 0)
+                mode = Mode::Main;  // 返回主菜单
+            if (result == 2)
+                return;  // 已清空
+            // result == 3：管理操作完成，继续在 Manage 模式循环
         }
     }
 }
