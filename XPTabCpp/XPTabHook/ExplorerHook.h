@@ -31,10 +31,6 @@ namespace ExplorerHook
     // WinEventProc 在 UI 线程执行时调用此函数（COM STA 对象有线程亲和性）
     void TickTabBarsOnCurrentThread();
 
-    // 清理所有线程特定的 WH_CALLWNDPROC 钩子
-    // 在 Uninstall 时调用
-    void CleanupThreadHooks();
-
     // 子类化窗口过程（导出供内部使用）
     LRESULT CALLBACK SubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 }

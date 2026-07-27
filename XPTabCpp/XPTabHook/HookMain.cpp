@@ -102,6 +102,12 @@ namespace HookMain
         if (idObject != OBJID_WINDOW)
             return;
 
+        // 跳过 EVENT_OBJECT_CREATE：窗口创建阶段子类化会干扰初始化
+        // （例如双击桌面"此电脑"打开新窗口时，过早 hook 会导致窗口无法打开）
+        // HookWindow 内部也有 IsWindowVisible 检查，但这里提前过滤减少不必要调用
+        if (event == EVENT_OBJECT_CREATE)
+            return;
+
         // 调试日志：记录回调被调用（节流，避免刷屏）
         static DWORD s_lastDbgTick = 0;
         DWORD now0 = GetTickCount();
@@ -119,6 +125,17 @@ namespace HookMain
         if (hwnd && IsWindow(hwnd))
         {
             ExplorerHook::HookWindow(hwnd);
+        }
+
+        // 节流：定期枚举所有 CabinetWClass 窗口（兜底机制）
+        // 关键：此处运行在产生事件的线程（Explorer UI 线程），
+        // 因此 HookWindow 是同线程调用，不需要 WH_CALLWNDPROC
+        static DWORD s_lastEnumTick = 0;
+        DWORD nowEnum = GetTickCount();
+        if (nowEnum - s_lastEnumTick >= 2000)
+        {
+            s_lastEnumTick = nowEnum;
+            ExplorerHook::EnumAndHookAllWindows();
         }
 
         // 节流：定期驱动当前线程的标签栏检查导航变化
@@ -143,12 +160,9 @@ namespace HookMain
             {
                 TryInstallWinEventHook();
             }
-            // 定期主动枚举所有 CabinetWClass 窗口（兜底机制）
-            // 解决 DLL 注入时窗口已创建、未收到创建事件的问题
-            if (!g_uninstalling.load())
-            {
-                ExplorerHook::EnumAndHookAllWindows();
-            }
+            // 注意：EnumAndHookAllWindows 已移至 WinEventProc 中调用
+            // 因为 WinEventProc 运行在 Explorer UI 线程（WINEVENT_INCONTEXT），
+            // 而 WM_TIMER 运行在工作线程，跨线程调用 HookWindow 会导致问题
             return 0;
 
         case WM_XPTAB_QUIT:
@@ -225,9 +239,6 @@ namespace HookMain
 
         // 恢复所有已子类化的窗口
         ExplorerHook::UnhookAllWindows();
-
-        // 清理线程特定的 WH_CALLWNDPROC 钩子
-        ExplorerHook::CleanupThreadHooks();
 
         // 反注册窗口类
         UnregisterClassW(kMsgWndClass, hThisModule);

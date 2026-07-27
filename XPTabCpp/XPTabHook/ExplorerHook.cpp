@@ -29,12 +29,6 @@ namespace ExplorerHook
     static bool g_csInitialized = false;
     // 已 Hook 的窗口集合（HWND -> TabBarWindow*）
     static std::map<HWND, TabBarWindow*> g_hookedWindows;
-    // 线程特定 WH_CALLWNDPROC 钩子集合（TID -> HHOOK）
-    // 用于在窗口线程上下文执行子类化（SetWindowLongPtrW 要求同线程）
-    static std::map<DWORD, HHOOK> g_threadHooks;
-
-    // 前向声明
-    static LRESULT CALLBACK CallWndProc(int nCode, WPARAM wParam, LPARAM lParam);
 
     // 初始化临界区（仅一次）
     static void EnsureCsInit()
@@ -218,44 +212,21 @@ namespace ExplorerHook
         if (!hwnd || !IsWindow(hwnd))
             return;
 
+        // 可见性检查：跳过不可见窗口
+        // 新窗口在 EVENT_OBJECT_CREATE 阶段尚未可见，此时子类化会干扰其初始化
+        // （例如双击桌面"此电脑"时，过早 hook 会导致新窗口无法打开）
+        // 只在窗口可见后再 hook，确保 Explorer 已完成窗口初始化
+        if (!IsWindowVisible(hwnd))
+            return;
+
         // 线程检查：GetWindowLongPtrW(GWLP_WNDPROC) 要求同线程调用
-        // WinEventProc 回调在产生事件的线程执行，此检查确保只子类化当前线程的窗口
+        // WinEventProc 回调在产生事件的线程执行（WINEVENT_INCONTEXT），
+        // 因此通常已是同线程。若跨线程（如 EnumAndHookAllWindows 从工作线程调用），
+        // 直接跳过——WinEventProc 会在正确线程重新触发。
         DWORD wndTid = GetWindowThreadProcessId(hwnd, NULL);
         DWORD curTid = GetCurrentThreadId();
         if (wndTid != curTid)
         {
-            // 跨线程：安装 WH_CALLWNDPROC 钩子到目标线程
-            // 钩子回调会在目标线程执行，届时调用 HookWindow 将是同线程
-            EnsureCsInit();
-            EnterCriticalSection(&g_cs);
-            bool hasHook = (g_threadHooks.find(wndTid) != g_threadHooks.end());
-            LeaveCriticalSection(&g_cs);
-
-            if (!hasHook)
-            {
-                HHOOK hHook = SetWindowsHookExW(WH_CALLWNDPROC, CallWndProc,
-                                                 Utils::GetThisModule(), wndTid);
-                if (hHook)
-                {
-                    EnterCriticalSection(&g_cs);
-                    g_threadHooks[wndTid] = hHook;
-                    LeaveCriticalSection(&g_cs);
-                    char buf[160];
-                    sprintf_s(buf, sizeof(buf),
-                              "HookWindow: 安装 WH_CALLWNDPROC tid=%lu hwnd=0x%p",
-                              wndTid, hwnd);
-                    Utils::DebugTrace(buf);
-                    Utils::Log(L"安装 WH_CALLWNDPROC 到线程 " + std::to_wstring(wndTid));
-                }
-                else
-                {
-                    char buf[160];
-                    sprintf_s(buf, sizeof(buf),
-                              "HookWindow: SetWindowsHookExW 失败 tid=%lu err=%lu",
-                              wndTid, GetLastError());
-                    Utils::DebugTrace(buf);
-                }
-            }
             return;
         }
 
@@ -490,52 +461,6 @@ namespace ExplorerHook
         {
             bar->OnTimerTick();
         }
-    }
-
-    // ----------------------------------------------------------------
-    // WH_CALLWNDPROC 回调：在目标窗口线程执行
-    // 用于跨线程子类化场景：WinEventProc 在工作线程执行时，
-    // 通过此钩子在窗口线程执行 HookWindow
-    // ----------------------------------------------------------------
-    static LRESULT CALLBACK CallWndProc(int nCode, WPARAM wParam, LPARAM lParam)
-    {
-        if (nCode == HC_ACTION)
-        {
-            CWPSTRUCT* pcwp = reinterpret_cast<CWPSTRUCT*>(lParam);
-            if (pcwp && IsWindow(pcwp->hwnd))
-            {
-                // 在目标线程上下文尝试 hook
-                // HookWindow 内部有线程检查，此时 curTid == 窗口线程
-                HookWindow(pcwp->hwnd);
-
-                // 同时检查父窗口是否是 CabinetWClass（子窗口消息的父窗口可能是目标）
-                HWND parent = GetParent(pcwp->hwnd);
-                if (parent && IsWindow(parent))
-                {
-                    HookWindow(parent);
-                }
-            }
-        }
-        return CallNextHookEx(NULL, nCode, wParam, lParam);
-    }
-
-    // ----------------------------------------------------------------
-    // 清理所有线程特定的 WH_CALLWNDPROC 钩子
-    // ----------------------------------------------------------------
-    void CleanupThreadHooks()
-    {
-        EnsureCsInit();
-        EnterCriticalSection(&g_cs);
-        for (const auto& pair : g_threadHooks)
-        {
-            if (pair.second)
-            {
-                UnhookWindowsHookEx(pair.second);
-            }
-        }
-        g_threadHooks.clear();
-        LeaveCriticalSection(&g_cs);
-        Utils::Log(L"已清理所有 WH_CALLWNDPROC 钩子");
     }
 
 } // namespace ExplorerHook

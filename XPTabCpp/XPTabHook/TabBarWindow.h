@@ -87,6 +87,12 @@ private:
     bool m_shellTabRectValid;     // 原始 rect 是否已记录
     HWND m_lastShellTabHwnd;      // 上次找到的 ShellTab 窗口句柄（用于检测变化）
 
+    // 上次 UpdatePosition 后 TabBar 和 ShellTab 的位置
+    // 用于判断位置是否真的变化，避免不必要的 InvalidateRect
+    // （频繁 InvalidateRect 会干扰 Explorer 内部 hover 重绘，导致重影）
+    RECT m_lastTabBarRect;        // 上次 TabBar 的客户区位置
+    bool m_lastTabBarRectValid;
+
     // 收藏列表（所有 TabBarWindow 实例共享同一份文件）
     // 注意：每个 Explorer 窗口的 TabBarWindow 都会加载一份内存副本，
     // 但保存时写同一文件。修改后其他窗口会在下次 LoadFavorites 时同步。
@@ -124,6 +130,8 @@ private:
     // ---- 收藏功能 ----
     // 加载收藏列表（从 %LOCALAPPDATA%\XPTabCpp\favorites.dat）
     void LoadFavorites();
+    // 加载默认收藏（首次使用、文件不存在时）
+    void LoadDefaultFavorites();
     // 保存收藏列表
     void SaveFavorites();
     // 释放 m_favorites 中所有 PIDL

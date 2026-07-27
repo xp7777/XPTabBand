@@ -115,11 +115,89 @@ namespace ExplorerInterface
         return pidl;
     }
 
+    // 获取当前文件夹 PIDL（增强版）
+    // 通过 IShellBrowser->QueryActiveShellView->GetItemObject(SVGIO_BACKGROUND) 获取真实 PIDL
+    // 对特殊文件夹（此电脑、控制面板）也能正确返回
+    LPITEMIDLIST GetCurrentPidlEx(IWebBrowser2* pBrowser)
+    {
+        if (!pBrowser)
+            return NULL;
+
+        // IWebBrowser2 实现 IOleWindow 接口，可通过它获取 IShellBrowser
+        // 实际上 IWebBrowser2 内部就是 IShellBrowser 的包装
+        // 这里用 QueryService 获取 IShellBrowser
+        IServiceProvider* pSvc = NULL;
+        HRESULT hr = pBrowser->QueryInterface(IID_PPV_ARGS(&pSvc));
+        if (FAILED(hr) || !pSvc)
+        {
+            // 回退到 GetCurrentPidl
+            return GetCurrentPidl(pBrowser);
+        }
+
+        IShellBrowser* pShellBrowser = NULL;
+        hr = pSvc->QueryService(SID_SShellBrowser, IID_PPV_ARGS(&pShellBrowser));
+        pSvc->Release();
+        if (FAILED(hr) || !pShellBrowser)
+        {
+            return GetCurrentPidl(pBrowser);
+        }
+
+        IShellView* pView = NULL;
+        hr = pShellBrowser->QueryActiveShellView(&pView);
+        pShellBrowser->Release();
+        if (FAILED(hr) || !pView)
+        {
+            return GetCurrentPidl(pBrowser);
+        }
+
+        // 通过 GetItemObject(SVGIO_BACKGROUND) 获取当前文件夹 PIDL
+        // IFolderView 提供当前文件夹 PIDL
+        IFolderView* pFolderView = NULL;
+        hr = pView->QueryInterface(IID_PPV_ARGS(&pFolderView));
+        if (FAILED(hr) || !pFolderView)
+        {
+            pView->Release();
+            return GetCurrentPidl(pBrowser);
+        }
+
+        LPITEMIDLIST pidl = NULL;
+        // IFolderView::GetFolder 签名：HRESULT GetFolder([in] REFIID, [out] void**)
+        // 用 IID_IPersistIDList 直接获取 PIDL
+        IPersistIDList* pPersist = NULL;
+        hr = pFolderView->GetFolder(IID_PPV_ARGS(&pPersist));
+        pFolderView->Release();
+        pView->Release();
+        if (FAILED(hr) || !pPersist)
+        {
+            return GetCurrentPidl(pBrowser);
+        }
+
+        hr = pPersist->GetIDList(&pidl);
+        pPersist->Release();
+        if (FAILED(hr) || !pidl)
+        {
+            return GetCurrentPidl(pBrowser);
+        }
+
+        return pidl;
+    }
+
     std::wstring GetCurrentFolderName(IWebBrowser2* pBrowser)
     {
         if (!pBrowser)
             return L"";
 
+        // 优先用 GetCurrentPidlEx + GetNameFromPidl，对特殊文件夹更准确
+        LPITEMIDLIST pidl = GetCurrentPidlEx(pBrowser);
+        if (pidl)
+        {
+            std::wstring name = GetNameFromPidl(pidl);
+            ILFree(pidl);
+            if (!name.empty())
+                return name;
+        }
+
+        // 回退到 LocationName
         BSTR bstrName = NULL;
         HRESULT hr = pBrowser->get_LocationName(&bstrName);
         if (FAILED(hr) || !bstrName)
@@ -207,5 +285,53 @@ namespace ExplorerInterface
         }
 
         return L"";
+    }
+
+    // 获取特殊文件夹的 PIDL
+    LPITEMIDLIST GetSpecialFolderPidl(int csidl)
+    {
+        LPITEMIDLIST pidl = NULL;
+        HRESULT hr = SHGetFolderLocation(NULL, csidl, NULL, 0, &pidl);
+        if (FAILED(hr))
+        {
+            // 回退到 SHGetSpecialFolderLocation（旧 API）
+            hr = SHGetSpecialFolderLocation(NULL, csidl, &pidl);
+            if (FAILED(hr))
+                return NULL;
+        }
+        return pidl;
+    }
+
+    // 从字符串路径或 GUID 路径创建 PIDL
+    // 支持：
+    //   - 普通路径 "C:\Windows"
+    //   - GUID 路径 "::{CLSID}"（如此电脑 ::{20D04FE0-3AEA-1069-A2D8-08002B30309D}）
+    //   - 复合路径 "::{CLSID}\0\::{CLSID}"（如控制面板\网络连接）
+    LPITEMIDLIST CreatePidlFromPath(const std::wstring& path)
+    {
+        if (path.empty())
+            return NULL;
+
+        // 优先用 SHParseDisplayName（对 GUID 路径和普通路径都支持）
+        LPITEMIDLIST pidl = NULL;
+        HRESULT hr = SHParseDisplayName(path.c_str(), NULL, &pidl, 0, NULL);
+        if (SUCCEEDED(hr) && pidl)
+            return pidl;
+
+        // 回退到 ILCreateFromPathW（仅文件系统路径）
+        LPITEMIDLIST pidl2 = ILCreateFromPathW(path.c_str());
+        return pidl2;
+    }
+
+    // 判断 PIDL 是否为特殊文件夹（无文件系统路径）
+    bool IsSpecialFolderPidl(LPCITEMIDLIST pidl)
+    {
+        if (!pidl)
+            return false;
+
+        // SHGetPathFromIDListW 对特殊文件夹返回 FALSE
+        wchar_t path[MAX_PATH] = { 0 };
+        BOOL ret = SHGetPathFromIDListW(pidl, path);
+        return (ret == FALSE || path[0] == L'\0');
     }
 }

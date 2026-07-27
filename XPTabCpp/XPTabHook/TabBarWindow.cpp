@@ -51,9 +51,14 @@ static const int kCloseButtonWidth = 20;
 // 文字左边距
 static const int kTextPadding = 8;
 
+// 定时器间隔（毫秒）
+// 用于位置修正（防止 Explorer 重布局遮挡 TabBar）
+// 不宜过短，否则会干扰 Explorer 内部 hover 重绘导致重影
+static const DWORD kCheckIntervalMs = 1000;
 // 导航变化检查间隔（毫秒）
-// 缩短到 200ms 以便及时修正 Explorer 重新布局导致的位置错乱
-static const DWORD kCheckIntervalMs = 200;
+// 检测用户在 Explorer 中手动导航并更新标签 PIDL/标题
+// 单独节流，避免频繁调用 COM 接口
+static const DWORD kNavCheckIntervalMs = 2000;
 // TabBar 定时器 ID
 static const UINT_PTR kTabBarTimerId = 1001;
 
@@ -164,8 +169,10 @@ TabBarWindow::TabBarWindow()
     , m_lastCheckTick(0)
     , m_shellTabRectValid(false)
     , m_lastShellTabHwnd(NULL)
+    , m_lastTabBarRectValid(false)
 {
     m_originalShellTabRect = { 0, 0, 0, 0 };
+    m_lastTabBarRect = { 0, 0, 0, 0 };
 }
 
 TabBarWindow::~TabBarWindow()
@@ -300,127 +307,56 @@ void TabBarWindow::UpdatePosition()
     int tabBarHeight = 30;
     m_windowHeight = tabBarHeight;
 
+    // 关键设计：overlay 覆盖方案
+    // 不移动、不调整 ShellTabWindowClass 的位置和大小！
+    // 只将 TabBar 作为子窗口覆盖在 ShellTabWindowClass 顶部 30 像素区域。
+    // 这样 Explorer 的原生布局引擎完全不受干扰，避免重影/渲染异常。
+    // 代价：TabBar 会遮挡文件列表顶部 30 像素（通常不到一行图标）。
+
+    int targetLeft = 0;
+    int targetTop = 0;
+    int targetWidth = 100;
+
     if (data.hwndShellTab)
     {
-        // 检测 ShellTab 窗口句柄是否变化（Explorer 可能重建子窗口）
-        // 如果变化，重新记录原始 rect
-        if (data.hwndShellTab != m_lastShellTabHwnd)
-        {
-            m_shellTabRectValid = false;
-            m_lastShellTabHwnd = data.hwndShellTab;
-        }
-
-        // 获取 ShellTabWindowClass 当前位置（屏幕坐标）
+        // 获取 ShellTabWindowClass 当前位置（客户区坐标）
         RECT rcTab;
         GetWindowRect(data.hwndShellTab, &rcTab);
         POINT pt = { rcTab.left, rcTab.top };
         ScreenToClient(m_hExplorer, &pt);
-        int curWidth = rcTab.right - rcTab.left;
-        int curHeight = rcTab.bottom - rcTab.top;
-        int curTop = pt.y;  // 相对客户区的 top
-
-        // 记录或验证原始 rect
-        // 关键：不能每次都用"当前"高度减 tabBarHeight，否则高度会越来越小
-        // 必须用"未被我们压缩的"原始高度计算
-        if (!m_shellTabRectValid)
-        {
-            // 第一次记录，或 ShellTab 句柄变了，或 Explorer 重布局了
-            // 判断当前 ShellTab 是否已被我们压缩：
-            //   - 如果 curTop == originalTop + tabBarHeight 且 curHeight == originalHeight - tabBarHeight
-            //     说明已被压缩，不能用当前值作为原始值
-            //   - 简单处理：第一次记录时假设未被压缩（注入前已重启 explorer）
-            m_originalShellTabRect.left = pt.x;
-            m_originalShellTabRect.top = curTop;
-            m_originalShellTabRect.right = curWidth;
-            m_originalShellTabRect.bottom = curHeight;
-            m_shellTabRectValid = true;
-
-            char dbg[200];
-            sprintf_s(dbg, sizeof(dbg),
-                      "UpdatePosition: 记录原始 ShellTab rect: left=%ld top=%ld w=%ld h=%ld",
-                      pt.x, curTop, curWidth, curHeight);
-            Utils::DebugTrace(dbg);
-        }
-        else
-        {
-            // 检测 Explorer 是否重布局了 ShellTab（width 变了，或 top 不是预期的压缩位置）
-            // 如果 Explorer 重布局，更新原始 rect
-            int expectedTop = m_originalShellTabRect.top + tabBarHeight;
-            int expectedHeight = m_originalShellTabRect.bottom - tabBarHeight;
-            if (curWidth != m_originalShellTabRect.right ||
-                (curTop != expectedTop && curTop != m_originalShellTabRect.top))
-            {
-                // Explorer 重布局了，重新记录
-                // 注意：如果 curTop == expectedTop，说明是我们压缩后的位置，不更新
-                // 如果 curTop == originalTop，说明 Explorer 恢复了原始位置，也不更新
-                // 只有 curTop 是其他值，才说明 Explorer 重布局
-                if (curTop != expectedTop && curTop != m_originalShellTabRect.top)
-                {
-                    m_originalShellTabRect.left = pt.x;
-                    m_originalShellTabRect.top = curTop;
-                    m_originalShellTabRect.right = curWidth;
-                    m_originalShellTabRect.bottom = curHeight;
-
-                    char dbg[200];
-                    sprintf_s(dbg, sizeof(dbg),
-                              "UpdatePosition: Explorer 重布局，更新原始 rect: top=%ld w=%ld h=%ld",
-                              curTop, curWidth, curHeight);
-                    Utils::DebugTrace(dbg);
-                }
-                else if (curWidth != m_originalShellTabRect.right)
-                {
-                    // 宽度变了（窗口大小变化），只更新宽度
-                    m_originalShellTabRect.right = curWidth;
-                }
-            }
-        }
-
-        // 用原始 rect 计算应有位置
-        int origLeft = m_originalShellTabRect.left;
-        int origTop = m_originalShellTabRect.top;
-        int origWidth = m_originalShellTabRect.right;
-        int origHeight = m_originalShellTabRect.bottom;
-
-        int newTop = origTop + tabBarHeight;
-        int newHeight = origHeight - tabBarHeight;
-        if (newHeight < 50) newHeight = 50;
-
-        // 只有位置确实不对才 MoveWindow，避免反复重绘引起闪烁
-        if (curTop != newTop || curWidth != origWidth || curHeight != newHeight)
-        {
-            MoveWindow(data.hwndShellTab, origLeft, newTop, origWidth, newHeight, FALSE);
-        }
-
-        // TabBar 放在 ShellTabWindowClass 原位置的顶部
-        m_windowWidth = origWidth;
-
-        // 检查 TabBar 当前位置是否需要更新
-        RECT rcBar;
-        GetWindowRect(m_hwnd, &rcBar);
-        POINT ptBar = { rcBar.left, rcBar.top };
-        ScreenToClient(m_hExplorer, &ptBar);
-        if (ptBar.x != origLeft || ptBar.y != origTop ||
-            (rcBar.right - rcBar.left) != origWidth ||
-            (rcBar.bottom - rcBar.top) != tabBarHeight)
-        {
-            MoveWindow(m_hwnd, origLeft, origTop, origWidth, tabBarHeight, FALSE);
-        }
-
-        // 保持 TabBar 在 Z-order 顶部
-        SetWindowPos(m_hwnd, HWND_TOP, 0, 0, 0, 0,
-                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        targetLeft = pt.x;
+        targetTop = pt.y;
+        targetWidth = rcTab.right - rcTab.left;
     }
     else
     {
         // 未找到 ShellTabWindowClass，回退到客户区顶部
         RECT rcClient;
         GetClientRect(m_hExplorer, &rcClient);
-        m_windowWidth = rcClient.right;
-        MoveWindow(m_hwnd, 0, 0, rcClient.right, tabBarHeight, FALSE);
+        targetLeft = 0;
+        targetTop = 0;
+        targetWidth = rcClient.right;
     }
 
-    UpdateTabRects();
-    InvalidateRect(m_hwnd, NULL, FALSE);
+    m_windowWidth = targetWidth;
+
+    // 检查 TabBar 当前位置是否需要更新
+    // 只在位置/大小确实变化时才 MoveWindow + 重绘，避免干扰 Explorer hover 重绘
+    RECT rcBar;
+    GetWindowRect(m_hwnd, &rcBar);
+    POINT ptBar = { rcBar.left, rcBar.top };
+    ScreenToClient(m_hExplorer, &ptBar);
+    bool needMove = (ptBar.x != targetLeft || ptBar.y != targetTop ||
+                     (rcBar.right - rcBar.left) != targetWidth ||
+                     (rcBar.bottom - rcBar.top) != tabBarHeight);
+    if (needMove)
+    {
+        MoveWindow(m_hwnd, targetLeft, targetTop, targetWidth, tabBarHeight, FALSE);
+        SetWindowPos(m_hwnd, HWND_TOP, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        UpdateTabRects();
+        InvalidateRect(m_hwnd, NULL, FALSE);
+    }
 }
 
 // ====================================================================
@@ -445,20 +381,52 @@ bool TabBarWindow::TryAcquireBrowser()
     Utils::Log(L"已获取 IWebBrowser2");
 
     // 如果还没有标签，创建初始标签
+    // 关键：初始标签只记录当前 PIDL，不触发导航
+    // 因为 Explorer 当前已经显示该路径，调用 Navigate2 会取消用户正在进行的操作
+    // （例如双击"此电脑"打开新窗口时，Navigate2 会打断初始打开流程）
     if (m_tabs.empty())
     {
-        LPITEMIDLIST pidl = ExplorerInterface::GetCurrentPidl(m_pBrowser);
-        std::wstring name = ExplorerInterface::GetCurrentFolderName(m_pBrowser);
+        // 用 GetCurrentPidlEx 获取当前文件夹 PIDL（对特殊文件夹也有效）
+        LPITEMIDLIST pidl = ExplorerInterface::GetCurrentPidlEx(m_pBrowser);
+        std::wstring name;
+        if (pidl)
+        {
+            name = ExplorerInterface::GetNameFromPidl(pidl);
+        }
+        if (name.empty())
+            name = ExplorerInterface::GetCurrentFolderName(m_pBrowser);
         if (name.empty())
             name = L"资源管理器";
         if (!pidl)
         {
             // 回退：使用"此电脑"作为初始标签
-            pidl = ExplorerInterface::CopyPidl(NULL);
+            pidl = ExplorerInterface::GetSpecialFolderPidl(CSIDL_DRIVES);
+            if (pidl)
+            {
+                std::wstring realName = ExplorerInterface::GetNameFromPidl(pidl);
+                if (!realName.empty())
+                    name = realName;
+                else
+                    name = L"此电脑";
+            }
         }
-        AddTab(pidl, name);
+
+        // 直接构建 TabItem，不调用 AddTab（AddTab 会 ActivateTab 触发 Navigate2）
+        TabItem tab;
+        tab.title = name;
+        tab.pidl = ExplorerInterface::CopyPidl(pidl);
+        tab.active = true;
+        tab.rect = { 0, 0, m_tabWidth, m_windowHeight };
+        m_tabs.push_back(tab);
+        m_activeIndex = 0;
+
+        UpdateTabRects();
+        InvalidateRect(m_hwnd, NULL, FALSE);
+
+        Utils::Log(L"AddTab: 初始标签 '" + name + L"'（不触发导航）");
+
         if (pidl)
-            ILFree(pidl); // AddTab 内部已深拷贝
+            ILFree(pidl);
     }
     return true;
 }
@@ -699,41 +667,20 @@ LRESULT TabBarWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam)
         {
         case HIT_PLUS:
         {
-            // + 按钮：新建标签
-            // 1) 若已有标签：复制当前标签 PIDL 新建
-            // 2) 若无标签：尝试获取 IWebBrowser2，用当前 Explorer 路径新建
-            if (!m_tabs.empty() &&
-                m_activeIndex >= 0 &&
-                m_activeIndex < static_cast<int>(m_tabs.size()))
+            // + 按钮：新建标签，默认导航到"此电脑"
+            // 用 CSIDL_DRIVES 获取"此电脑"的 PIDL
+            LPITEMIDLIST pidlThisPC = ExplorerInterface::GetSpecialFolderPidl(CSIDL_DRIVES);
+            std::wstring nameThisPC = L"此电脑";
+            if (pidlThisPC)
             {
-                LPCITEMIDLIST curPidl = m_tabs[m_activeIndex].pidl;
-                std::wstring curTitle = m_tabs[m_activeIndex].title;
-                AddTab(curPidl, curTitle);
+                // 用真实显示名（系统语言可能不同，如英文系统是 "This PC"）
+                std::wstring realName = ExplorerInterface::GetNameFromPidl(pidlThisPC);
+                if (!realName.empty())
+                    nameThisPC = realName;
             }
-            else
-            {
-                // 尝试获取 browser 并新建初始标签
-                if (!m_pBrowser)
-                {
-                    TryAcquireBrowser();
-                }
-                if (m_pBrowser)
-                {
-                    LPITEMIDLIST pidl = ExplorerInterface::GetCurrentPidl(m_pBrowser);
-                    std::wstring name = ExplorerInterface::GetCurrentFolderName(m_pBrowser);
-                    if (name.empty())
-                        name = L"资源管理器";
-                    if (!pidl)
-                        pidl = ExplorerInterface::CopyPidl(NULL);
-                    AddTab(pidl, name);
-                    if (pidl) ILFree(pidl);
-                }
-                else
-                {
-                    // browser 不可用：用"资源管理器"占位
-                    AddTab(NULL, L"资源管理器");
-                }
-            }
+            AddTab(pidlThisPC, nameThisPC);
+            if (pidlThisPC)
+                ILFree(pidlThisPC);
             break;
         }
 
@@ -810,16 +757,18 @@ LRESULT TabBarWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam)
 //    布局 ShellTabWindowClass，把它移回原位置覆盖 TabBar。我们必须主动监测
 //    并立即修正，否则 TabBar 会被遮挡"消失"。
 // 2) 检查导航变化并更新当前标签的 PIDL/标题
+//    单独节流，避免频繁调用 COM 接口干扰 Explorer
 // ====================================================================
 void TabBarWindow::OnTimerTick()
 {
-    // 第一步：无条件修正位置（每 200ms 触发，开销很小）
+    // 第一步：无条件修正位置（每 kCheckIntervalMs 触发）
     // UpdatePosition 内部会判断位置是否真的不对，不对才 MoveWindow
+    // 位置未变时不 InvalidateRect，避免干扰 Explorer hover 重绘
     UpdatePosition();
 
-    // 第二步：节流后的导航变化检查
+    // 第二步：节流后的导航变化检查（每 kNavCheckIntervalMs 触发）
     DWORD now = GetTickCount();
-    if (now - m_lastCheckTick < kCheckIntervalMs)
+    if (now - m_lastCheckTick < kNavCheckIntervalMs)
         return;
     m_lastCheckTick = now;
 
@@ -840,8 +789,8 @@ void TabBarWindow::OnTimerTick()
     if (m_activeIndex < 0 || m_activeIndex >= static_cast<int>(m_tabs.size()))
         return;
 
-    // 获取当前 Explorer 显示的路径
-    LPITEMIDLIST curPidl = ExplorerInterface::GetCurrentPidl(m_pBrowser);
+    // 获取当前 Explorer 显示的路径（用增强版，对特殊文件夹有效）
+    LPITEMIDLIST curPidl = ExplorerInterface::GetCurrentPidlEx(m_pBrowser);
     if (!curPidl)
         return;
 
@@ -1061,6 +1010,7 @@ void TabBarWindow::FreeFavorites()
 //     [DWORD pathLen（含 \0 的 wchar 数）][wchar[] path]
 // 使用 path 而非直接序列化 PIDL，因为 ILSaveToStream/ILLoadFromStream 已弃用
 // 加载时用 SHParseDisplayName 从 path 还原 PIDL
+// path 支持普通路径 "C:\Windows" 和 GUID 路径 "::{CLSID}"
 void TabBarWindow::LoadFavorites()
 {
     FreeFavorites();
@@ -1069,7 +1019,8 @@ void TabBarWindow::LoadFavorites()
     FILE* fp = NULL;
     if (_wfopen_s(&fp, path.c_str(), L"rb") != 0 || !fp)
     {
-        // 文件不存在是正常情况（首次使用）
+        // 文件不存在是正常情况（首次使用），加载默认收藏
+        LoadDefaultFavorites();
         return;
     }
 
@@ -1077,6 +1028,7 @@ void TabBarWindow::LoadFavorites()
     if (fread(&count, sizeof(count), 1, fp) != 1)
     {
         fclose(fp);
+        LoadDefaultFavorites();
         return;
     }
 
@@ -1106,12 +1058,10 @@ void TabBarWindow::LoadFavorites()
         if (nul2 != std::wstring::npos)
             favPath.resize(nul2);
 
-        // 从路径还原 PIDL
-        LPITEMIDLIST pidl = NULL;
-        HRESULT hr = SHParseDisplayName(favPath.c_str(), NULL, &pidl, 0, NULL);
-        if (FAILED(hr) || !pidl)
+        // 从路径还原 PIDL（支持普通路径和 GUID 路径）
+        LPITEMIDLIST pidl = ExplorerInterface::CreatePidlFromPath(favPath);
+        if (!pidl)
         {
-            // 路径无效（可能是特殊位置如"此电脑"），跳过
             Utils::Log(L"收藏路径无效，跳过：" + favPath);
             continue;
         }
@@ -1126,7 +1076,47 @@ void TabBarWindow::LoadFavorites()
     Utils::Log(L"已加载收藏列表：" + std::to_wstring(m_favorites.size()) + L" 项");
 }
 
+// 加载默认收藏列表（首次使用时）
+// 包含常用特殊文件夹：此电脑、控制面板、网络连接
+void TabBarWindow::LoadDefaultFavorites()
+{
+    struct DefaultFav { int csidl; const wchar_t* guidPath; const wchar_t* fallbackName; };
+    static const DefaultFav defaults[] = {
+        { CSIDL_DRIVES,   NULL, L"此电脑" },
+        { CSIDL_CONTROLS, NULL, L"控制面板" },
+        { 0, L"::{7007ACC7-3202-11D1-AAD2-00805FC1270E}", L"网络连接" },
+    };
+
+    for (const auto& d : defaults)
+    {
+        LPITEMIDLIST pidl = NULL;
+        if (d.csidl != 0)
+        {
+            pidl = ExplorerInterface::GetSpecialFolderPidl(d.csidl);
+        }
+        else if (d.guidPath)
+        {
+            pidl = ExplorerInterface::CreatePidlFromPath(d.guidPath);
+        }
+        if (!pidl)
+            continue;
+
+        std::wstring name = ExplorerInterface::GetNameFromPidl(pidl);
+        if (name.empty())
+            name = d.fallbackName;
+
+        FavoriteItem fav;
+        fav.title = name;
+        fav.pidl = pidl;
+        m_favorites.push_back(fav);
+    }
+
+    Utils::Log(L"已加载默认收藏列表：" + std::to_wstring(m_favorites.size()) + L" 项");
+}
+
 // 保存收藏列表
+// 对普通文件系统路径保存路径字符串
+// 对特殊文件夹（如此电脑、控制面板）用 SHGetNameFromIDList 反查 GUID 路径
 void TabBarWindow::SaveFavorites()
 {
     std::wstring path = GetFavoritesFilePath();
@@ -1152,24 +1142,30 @@ void TabBarWindow::SaveFavorites()
         fwrite(&titleLen, sizeof(titleLen), 1, fp);
         fwrite(title.c_str(), sizeof(wchar_t), titleLen, fp);
 
-        // 从 PIDL 获取路径并写入
-        wchar_t pathBuf[MAX_PATH] = { 0 };
-        BOOL gotPath = FALSE;
+        // 获取可持久化的路径字符串
+        std::wstring favPath;
         if (fav.pidl)
         {
-            gotPath = SHGetPathFromIDListW(fav.pidl, pathBuf);
+            // 1) 优先用文件系统路径
+            wchar_t pathBuf[MAX_PATH] = { 0 };
+            if (SHGetPathFromIDListW(fav.pidl, pathBuf) && pathBuf[0] != L'\0')
+            {
+                favPath = pathBuf;
+            }
+            else
+            {
+                // 2) 特殊文件夹：用 SHGetNameFromIDList 反查 GUID 路径
+                //    SHGDN_FORPARSING 返回可解析路径（如 "::{CLSID}"）
+                PWSTR pName = NULL;
+                HRESULT hr = SHGetNameFromIDList(fav.pidl, SIGDN_DESKTOPABSOLUTEPARSING, &pName);
+                if (SUCCEEDED(hr) && pName)
+                {
+                    favPath = pName;
+                    CoTaskMemFree(pName);
+                }
+            }
         }
-        std::wstring favPath;
-        if (gotPath)
-        {
-            favPath = pathBuf;
-        }
-        else
-        {
-            // 特殊位置（如此电脑、控制面板）：用显示名作为标识
-            // 注意：这类收藏无法在重启后还原 PIDL，会被跳过
-            favPath = L"";
-        }
+
         DWORD pathLen = static_cast<DWORD>(favPath.length() + 1);
         fwrite(&pathLen, sizeof(pathLen), 1, fp);
         fwrite(favPath.c_str(), sizeof(wchar_t), pathLen, fp);

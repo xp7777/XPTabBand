@@ -31,7 +31,14 @@ namespace ExplorerInterface
 
     // 获取 IWebBrowser2 当前显示文件夹的 PIDL
     // 调用者负责用 ILFree 释放返回的 PIDL，失败返回 NULL
+    // 注意：此方法用 LocationURL，对特殊文件夹（如此电脑、控制面板）不可靠
     LPITEMIDLIST GetCurrentPidl(IWebBrowser2* pBrowser);
+
+    // 获取当前文件夹 PIDL（增强版）
+    // 优先用 IShellBrowser->QueryActiveShellView->GetItemObject 获取真实 PIDL
+    // 对特殊文件夹（此电脑、控制面板）也能正确返回
+    // 调用者负责 ILFree
+    LPITEMIDLIST GetCurrentPidlEx(IWebBrowser2* pBrowser);
 
     // 获取当前文件夹的显示名称（用于标签标题）
     // 失败返回空字符串
@@ -46,4 +53,16 @@ namespace ExplorerInterface
 
     // 从 PIDL 获取显示名称（友好名称，用于标签标题）
     std::wstring GetNameFromPidl(LPCITEMIDLIST pidl);
+
+    // 获取特殊文件夹的 PIDL（CSIDL_DRIVES=此电脑，CSIDL_CONTROLS=控制面板等）
+    // 调用者负责 ILFree
+    LPITEMIDLIST GetSpecialFolderPidl(int csidl);
+
+    // 从字符串路径或 GUID 路径创建 PIDL
+    // 支持普通路径 "C:\Windows" 和 GUID 路径 "::{CLSID}" 或 "::{CLSID}\子项"
+    // 调用者负责 ILFree
+    LPITEMIDLIST CreatePidlFromPath(const std::wstring& path);
+
+    // 判断 PIDL 是否为特殊文件夹（无文件系统路径，如此电脑、控制面板）
+    bool IsSpecialFolderPidl(LPCITEMIDLIST pidl);
 }

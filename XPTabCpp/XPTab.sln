@@ -6,6 +6,8 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "XPTabInject", "XPTabInject\
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "XPTabHook", "XPTabHook\XPTabHook.vcxproj", "{B2C3D4E5-F6A7-4B5C-9D8E-7F8A9B0C1D2E}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "XPTabBand", "XPTabBand\XPTabBand.vcxproj", "{C4D5E6F7-A8B9-4C5D-9E8F-90A1B2C3D4E5}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
@@ -20,6 +22,10 @@ Global
 		{B2C3D4E5-F6A7-4B5C-9D8E-7F8A9B0C1D2E}.Debug|x64.Build.0 = Debug|x64
 		{B2C3D4E5-F6A7-4B5C-9D8E-7F8A9B0C1D2E}.Release|x64.ActiveCfg = Release|x64
 		{B2C3D4E5-F6A7-4B5C-9D8E-7F8A9B0C1D2E}.Release|x64.Build.0 = Release|x64
+		{C4D5E6F7-A8B9-4C5D-9E8F-90A1B2C3D4E5}.Debug|x64.ActiveCfg = Debug|x64
+		{C4D5E6F7-A8B9-4C5D-9E8F-90A1B2C3D4E5}.Debug|x64.Build.0 = Debug|x64
+		{C4D5E6F7-A8B9-4C5D-9E8F-90A1B2C3D4E5}.Release|x64.ActiveCfg = Release|x64
+		{C4D5E6F7-A8B9-4C5D-9E8F-90A1B2C3D4E5}.Release|x64.Build.0 = Release|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
