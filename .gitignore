@@ -434,3 +434,26 @@ XPTabBand_log.txt
 # 旧的 C# XPTab 临时输出（保留源码，排除产物）
 XPTab/meta.res
 XPTab/meta.txt
+
+# ============================================================
+# 早期 C# 尝试代码（本地保留，不推送到开源仓库）
+# 最终方案为 XPTabCpp/XPTabBand/，这些历史代码不属于开源范围
+# ============================================================
+XPTab/
+build/
+QTTabBar_BandObject.cs
+QTHookLib*
+AppSettings.cs
+DebugLog.cs
+FavoritesService.cs
+FileExplorerPro.csproj
+FileExplorerPro.sln
+FileTabUserControl.cs
+MainForm.cs
+ModernTabControl.cs
+Program.cs
+QuickJumpForm.cs
+ShellService.cs
+TabSessionService.cs
+Theme.cs
+appsettings.json

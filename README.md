@@ -86,8 +86,6 @@ XPTabCpp/
     └── XPTabBand.iss       安装脚本
 ```
 
-根目录的 `XPTab/` 和 `QTTabBar_BandObject.cs` 是早期 C# 尝试和 QTTabBar 参考代码，最终方案为 `XPTabCpp/XPTabBand/`。
-
 ## 从源码编译
 
 ### 编译 DLL
@@ -132,9 +130,8 @@ cd XPTabCpp\installer
 ## 开发历程
 
 本项目经过多次方案迭代：
-1. 早期 C# DeskBand（`XPTab/`）— COM 互操作复杂，弃用
-2. DLL 注入方案（`XPTabHook/` + `XPTabInject/`）— 跨进程子类化不稳定
-3. C++ DeskBand（`XPTabBand/`）— 最终采用方案，参考 QTTabBar 实现
+1. DLL 注入方案（`XPTabHook/` + `XPTabInject/`）— 跨进程子类化不稳定，弃用
+2. C++ DeskBand（`XPTabBand/`）— 最终采用方案，参考 QTTabBar 实现
 
 ## 致谢
 
