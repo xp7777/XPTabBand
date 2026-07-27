@@ -457,3 +457,10 @@ ShellService.cs
 TabSessionService.cs
 Theme.cs
 appsettings.json
+
+# 早期开发期间的临时注册脚本（硬编码绝对路径，已由 deploy/install.bat 替代）
+fix_shell_default.bat
+fix_shell.ps1
+register_band.bat
+register_manual.bat
+register_admin.ps1
