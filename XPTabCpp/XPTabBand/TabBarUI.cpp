@@ -12,16 +12,20 @@
 
 // ====================================================================
 // 静态成员初始化
+// 现代暗色主题配色（参考 Chrome/Edge）
 // ====================================================================
-const COLORREF TabBarUI::kColorBg         = RGB(30, 30, 30);
-const COLORREF TabBarUI::kColorTabActive  = RGB(60, 60, 60);
-const COLORREF TabBarUI::kColorTabInactive= RGB(40, 40, 40);
-const COLORREF TabBarUI::kColorTabHover   = RGB(50, 50, 50);
-const COLORREF TabBarUI::kColorText       = RGB(220, 220, 220);
-const COLORREF TabBarUI::kColorClose      = RGB(200, 200, 200);
-const COLORREF TabBarUI::kColorCloseActive= RGB(255, 100, 100);
+const COLORREF TabBarUI::kColorBg         = RGB(32, 32, 32);      // 标签栏背景
+const COLORREF TabBarUI::kColorTabActive  = RGB(62, 62, 62);      // 激活标签背景
+const COLORREF TabBarUI::kColorTabInactive= RGB(38, 38, 38);      // 非激活标签背景（接近背景）
+const COLORREF TabBarUI::kColorTabHover   = RGB(50, 50, 50);      // 悬停非激活标签
+const COLORREF TabBarUI::kColorText       = RGB(240, 240, 240);   // 激活标签文字
+const COLORREF TabBarUI::kColorTextInactive = RGB(170, 170, 170);// 非激活标签文字
+const COLORREF TabBarUI::kColorClose      = RGB(160, 160, 160);
+const COLORREF TabBarUI::kColorCloseActive= RGB(255, 90, 90);
 const COLORREF TabBarUI::kColorPlus       = RGB(220, 220, 220);
-const COLORREF TabBarUI::kColorSeparator  = RGB(70, 70, 70);
+const COLORREF TabBarUI::kColorSeparator  = RGB(56, 56, 56);
+const COLORREF TabBarUI::kColorAccent     = RGB(0, 120, 215);     // 激活标签顶部蓝色高亮条
+const COLORREF TabBarUI::kColorBtnHover   = RGB(75, 75, 75);      // 按钮悬停背景
 
 // ====================================================================
 // 日志
@@ -980,13 +984,31 @@ void TabBarUI::OnPaint()
     FillRect(memDc, &clientRect, bgBrush);
     DeleteObject(bgBrush);
 
+    // 顶部细高光线（增加深度感）
+    {
+        HPEN pen = CreatePen(PS_SOLID, 1, RGB(48, 48, 48));
+        HPEN oldPen = (HPEN)SelectObject(memDc, pen);
+        MoveToEx(memDc, 0, 0, NULL);
+        LineTo(memDc, width, 0);
+        SelectObject(memDc, oldPen);
+        DeleteObject(pen);
+    }
+
     SetBkMode(memDc, TRANSPARENT);
 
+    // 字体：Segoe UI
     HFONT hFont = CreateFontW(
         14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
         CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
     HFONT oldFont = (HFONT)SelectObject(memDc, hFont);
+
+    // 标签布局参数
+    const int kTabPaddingX   = 3;   // 标签左右内边距（视觉间距）
+    const int kTabMarginTop  = 3;   // 标签顶部边距
+    const int kAccentHeight  = 3;   // 激活标签顶部高亮条高度
+    const int kCircleRadius  = 9;   // 关闭按钮圆形背景半径
+    const int kBtnRadius     = 11;  // + / ☆ 按钮圆形背景半径
 
     // 绘制各标签
     for (int i = 0; i < static_cast<int>(m_tabs.size()); i++)
@@ -994,67 +1016,109 @@ void TabBarUI::OnPaint()
         const TabItemUI& tab = m_tabs[i];
         RECT r = tab.rect;
 
-        // 标签背景
-        COLORREF tabColor = tab.active ? kColorTabActive : kColorTabInactive;
-        if (i == m_hoverTab && !tab.active)
-            tabColor = kColorTabHover;
+        // 实际绘制区域（左右留间距，上下留边距）
+        RECT tabRect = {
+            r.left + kTabPaddingX,
+            r.top + kTabMarginTop,
+            r.right - kTabPaddingX,
+            r.bottom
+        };
 
+        // 选择背景颜色
+        COLORREF tabColor;
+        if (tab.active)
+            tabColor = kColorTabActive;
+        else if (i == m_hoverTab)
+            tabColor = kColorTabHover;
+        else
+            tabColor = kColorTabInactive;
+
+        // 标签背景
         HBRUSH tabBrush = CreateSolidBrush(tabColor);
-        RECT fillRect = { r.left, r.top, r.right, r.bottom };
-        FillRect(memDc, &fillRect, tabBrush);
+        FillRect(memDc, &tabRect, tabBrush);
         DeleteObject(tabBrush);
 
-        // 分隔线
-        HPEN sepPen = CreatePen(PS_SOLID, 1, kColorSeparator);
-        HPEN oldPen = (HPEN)SelectObject(memDc, sepPen);
-        MoveToEx(memDc, r.right - 1, r.top, NULL);
-        LineTo(memDc, r.right - 1, r.bottom);
-        SelectObject(memDc, oldPen);
-        DeleteObject(sepPen);
+        // 激活标签顶部蓝色高亮条（Chrome 风格）
+        if (tab.active)
+        {
+            HBRUSH accentBrush = CreateSolidBrush(kColorAccent);
+            RECT accentRect = { tabRect.left, tabRect.top, tabRect.right, tabRect.top + kAccentHeight };
+            FillRect(memDc, &accentRect, accentBrush);
+            DeleteObject(accentBrush);
+        }
 
         // 标签文字
-        SetTextColor(memDc, kColorText);
-        RECT textRect = { r.left + kTextPadding, r.top, r.right - kCloseButtonWidth, r.bottom };
-        std::wstring title = tab.title;
-        if (title.length() > 20)
-            title = title.substr(0, 18) + L"...";
-        DrawTextW(memDc, title.c_str(), -1, &textRect,
+        SetTextColor(memDc, tab.active ? kColorText : kColorTextInactive);
+        RECT textRect = {
+            r.left + kTextPadding,
+            r.top,
+            r.right - kCloseButtonWidth,
+            r.bottom
+        };
+        DrawTextW(memDc, tab.title.c_str(), -1, &textRect,
                   DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
-        // 关闭按钮 ×
+        // 关闭按钮 ×（悬停时画圆形背景）
         RECT closeRect = { r.right - kCloseButtonWidth, r.top, r.right, r.bottom };
+        int cx = (closeRect.left + closeRect.right) / 2;
+        int cy = (closeRect.top + closeRect.bottom) / 2;
+        if (i == m_hoverTab)
+        {
+            HBRUSH circleBrush = CreateSolidBrush(kColorBtnHover);
+            HPEN oldPen = (HPEN)SelectObject(memDc, GetStockObject(NULL_PEN));
+            HBRUSH oldBrush = (HBRUSH)SelectObject(memDc, circleBrush);
+            Ellipse(memDc, cx - kCircleRadius, cy - kCircleRadius,
+                    cx + kCircleRadius, cy + kCircleRadius);
+            SelectObject(memDc, oldPen);
+            SelectObject(memDc, oldBrush);
+            DeleteObject(circleBrush);
+        }
         SetTextColor(memDc, (i == m_hoverTab) ? kColorCloseActive : kColorClose);
         DrawTextW(memDc, L"×", -1, &closeRect,
                   DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     }
 
-    // + 按钮
+    // + 按钮（圆形悬停背景）
     int plusX = static_cast<int>(m_tabs.size()) * m_tabWidth;
     RECT plusRect = { plusX, 0, plusX + kPlusButtonWidth, m_windowHeight };
+    int plusCx = (plusRect.left + plusRect.right) / 2;
+    int plusCy = (plusRect.top + plusRect.bottom) / 2;
     if (m_hoverButton == HIT_PLUS)
     {
-        HBRUSH hoverBrush = CreateSolidBrush(kColorTabHover);
-        FillRect(memDc, &plusRect, hoverBrush);
-        DeleteObject(hoverBrush);
+        HBRUSH circleBrush = CreateSolidBrush(kColorBtnHover);
+        HPEN oldPen = (HPEN)SelectObject(memDc, GetStockObject(NULL_PEN));
+        HBRUSH oldBrush = (HBRUSH)SelectObject(memDc, circleBrush);
+        Ellipse(memDc, plusCx - kBtnRadius, plusCy - kBtnRadius,
+                plusCx + kBtnRadius, plusCy + kBtnRadius);
+        SelectObject(memDc, oldPen);
+        SelectObject(memDc, oldBrush);
+        DeleteObject(circleBrush);
     }
     SetTextColor(memDc, kColorPlus);
     DrawTextW(memDc, L"+", -1, &plusRect,
               DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
-    // ☆ 收藏按钮
+    // ☆ 收藏按钮（圆形悬停背景）
     int favX = plusX + kPlusButtonWidth;
     RECT favRect = { favX, 0, favX + kFavoriteButtonWidth, m_windowHeight };
+    int favCx = (favRect.left + favRect.right) / 2;
+    int favCy = (favRect.top + favRect.bottom) / 2;
     if (m_hoverButton == HIT_FAVORITE)
     {
-        HBRUSH hoverBrush = CreateSolidBrush(kColorTabHover);
-        FillRect(memDc, &favRect, hoverBrush);
-        DeleteObject(hoverBrush);
+        HBRUSH circleBrush = CreateSolidBrush(kColorBtnHover);
+        HPEN oldPen = (HPEN)SelectObject(memDc, GetStockObject(NULL_PEN));
+        HBRUSH oldBrush = (HBRUSH)SelectObject(memDc, circleBrush);
+        Ellipse(memDc, favCx - kBtnRadius, favCy - kBtnRadius,
+                favCx + kBtnRadius, favCy + kBtnRadius);
+        SelectObject(memDc, oldPen);
+        SelectObject(memDc, oldBrush);
+        DeleteObject(circleBrush);
     }
     SetTextColor(memDc, kColorPlus);
     DrawTextW(memDc, L"☆", -1, &favRect,
               DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
-    // 关键：把内存 DC 拷贝到屏幕 DC（之前漏掉这步，导致白框）
+    // 拷贝到屏幕 DC
     BitBlt(hdc, 0, 0, width, height, memDc, 0, 0, SRCCOPY);
 
     // 清理

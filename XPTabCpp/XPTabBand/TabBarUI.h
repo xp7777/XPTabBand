@@ -100,10 +100,13 @@ private:
     static const COLORREF kColorTabInactive;
     static const COLORREF kColorTabHover;
     static const COLORREF kColorText;
+    static const COLORREF kColorTextInactive;
     static const COLORREF kColorClose;
     static const COLORREF kColorCloseActive;
     static const COLORREF kColorPlus;
     static const COLORREF kColorSeparator;
+    static const COLORREF kColorAccent;        // 激活标签顶部高亮条
+    static const COLORREF kColorBtnHover;      // 按钮悬停圆形背景
 
     // 定时器
     static const UINT_PTR kTabBarTimerId = 1001;
