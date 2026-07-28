@@ -1,5 +1,7 @@
 # XPTabBand
 
+![XPTabBand Logo](docs/logo.jpg)
+
 为 Windows 资源管理器添加类似 Chrome/Edge 的多标签页工具栏，支持收藏夹管理。
 
 ![主界面](docs/screenshot_main.png)

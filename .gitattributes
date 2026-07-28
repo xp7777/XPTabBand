@@ -67,20 +67,21 @@
 ###############################################################################
 
 # Windows 源码统一使用 CRLF 行尾（VS 默认）
-*.cpp     text eol=crlf working-tree-encoding=UTF-8-BOM
-*.h       text eol=crlf working-tree-encoding=UTF-8-BOM
-*.hpp     text eol=crlf working-tree-encoding=UTF-8-BOM
-*.c       text eol=crlf working-tree-encoding=UTF-8-BOM
-*.cc      text eol=crlf working-tree-encoding=UTF-8-BOM
+# 注意：不指定 working-tree-encoding，让 VS 保留的 BOM 自然存储
+*.cpp     text eol=crlf
+*.h       text eol=crlf
+*.hpp     text eol=crlf
+*.c       text eol=crlf
+*.cc      text eol=crlf
 
 # 模块定义文件
 *.def     text eol=crlf
 
 # 批处理 / PowerShell / Inno Setup 脚本统一 CRLF
-*.bat     text eol=crlf working-tree-encoding=UTF-8-BOM
+*.bat     text eol=crlf
 *.cmd     text eol=crlf
-*.ps1     text eol=crlf working-tree-encoding=UTF-8-BOM
-*.iss     text eol=crlf working-tree-encoding=UTF-8-BOM
+*.ps1     text eol=crlf
+*.iss     text eol=crlf
 
 # Markdown / 文档（保留行尾，让跨平台编辑友好）
 *.md      text eol=auto

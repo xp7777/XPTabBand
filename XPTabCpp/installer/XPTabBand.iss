@@ -36,8 +36,10 @@ SolidCompression=yes
 PrivilegesRequired=admin
 ArchitecturesAllowed=x64os
 ArchitecturesInstallIn64BitMode=x64os
-; 卸载时询问是否保留收藏夹
-UninstallDisplayIcon={app}\XPTabBand.dll
+; 安装包图标（与 DLL 一致）
+SetupIconFile=XPTabBand.ico
+; 卸载时显示自定义图标
+UninstallDisplayIcon={app}\XPTabBand.ico
 UninstallDisplayName={#MyAppName} {#MyAppVersion}
 ; 向导风格
 WizardStyle=modern
@@ -50,6 +52,8 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Files]
 ; 主 DLL
 Source: "..\deploy\XPTabBand.dll"; DestDir: "{app}"; Flags: ignoreversion
+; 应用图标（用于卸载列表显示）
+Source: "XPTabBand.ico"; DestDir: "{app}"; Flags: ignoreversion
 ; README 文档
 Source: "..\deploy\README.md"; DestDir: "{app}"; Flags: ignoreversion
 
