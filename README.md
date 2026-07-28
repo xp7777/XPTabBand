@@ -270,7 +270,9 @@ cd XPTabCpp\installer
 
 ## Star 历史
 
+<!-- 项目积累 star 后可恢复此段
 [![Star History](https://api.star-history.com/svg?repos=xp7777/XPTabBand&type=Date)](https://star-history.com/#xp7777/XPTabBand&Date)
+-->
 
 ## License
 
