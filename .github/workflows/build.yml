@@ -54,7 +54,7 @@ jobs:
           }
 
       - name: Upload DLL artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: XPTabBand-dll-${{ github.sha }}
           path: XPTabCpp/XPTabBand/build/XPTabBand.dll
@@ -91,7 +91,7 @@ jobs:
           & $iscc XPTabBand.iss
 
       - name: Upload installer artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: XPTabBand-setup
           path: XPTabCpp/installer/Output/XPTabBand-*-setup.exe
