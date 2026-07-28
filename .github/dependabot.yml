@@ -1,0 +1,31 @@
+version: 2
+updates:
+  # GitHub Actions 版本更新
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Asia/Shanghai
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - github-actions
+    commit-message:
+      prefix: chore
+      include: scope
+
+  # NuGet 包更新（如果未来引入 NuGet 依赖）
+  - package-ecosystem: nuget
+    directory: /XPTabCpp
+    schedule:
+      interval: monthly
+      timezone: Asia/Shanghai
+    open-pull-requests-limit: 3
+    labels:
+      - dependencies
+      - nuget
+    commit-message:
+      prefix: chore
+      include: scope

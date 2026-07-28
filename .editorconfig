@@ -1,0 +1,72 @@
+# EditorConfig 配置：让所有编辑器/IDE 保持一致风格
+# https://editorconfig.org
+
+root = true
+
+[*]
+charset = utf-8
+end_of_line = crlf
+indent_style = space
+indent_size = 4
+insert_final_newline = true
+trim_trailing_whitespace = true
+max_line_length = 120
+
+# C++ 源码：UTF-8 with BOM（VS 默认，避免 Win32 API 多字节字符问题）
+[*.{cpp,h,hpp,c,cc,cxx,hxx}]
+charset = utf-8-bom
+indent_size = 4
+
+# C 风格头文件（MinHook 等）
+[*.{c,h}]
+indent_size = 4
+
+# 批处理脚本
+[*.{bat,cmd}]
+end_of_line = crlf
+charset = utf-8
+indent_style = space
+indent_size = 2
+
+# PowerShell 脚本
+[*.ps1]
+end_of_line = crlf
+charset = utf-8-bom
+indent_size = 4
+
+# Inno Setup 脚本
+[*.iss]
+end_of_line = crlf
+charset = utf-8-bom
+indent_style = space
+indent_size = 2
+
+# YAML 配置（GitHub Actions / dependabot）
+[*.{yml,yaml}]
+indent_size = 2
+charset = utf-8
+end_of_line = lf
+
+# Markdown 文档
+[*.md]
+trim_trailing_whitespace = false
+max_line_length = off
+
+# JSON
+[*.json]
+indent_size = 2
+
+# 模块定义文件
+[*.def]
+indent_size = 4
+
+# 解决方案和项目文件（VS 自动管理格式）
+[*.{sln,vcxproj,vcxproj.filters,props,targets}]
+charset = utf-8-bom
+end_of_line = crlf
+indent_style = space
+indent_size = 2
+
+# Makefile 必须用 Tab
+[Makefile]
+indent_style = tab

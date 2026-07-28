@@ -47,7 +47,7 @@
 ###############################################################################
 # diff behavior for common document formats
 # 
-# Convert binary document formats to text before diffing them. This feature
+# Convert binary document formats to text before diffing them. This feature 
 # is only available from the command line. Turn it on by uncommenting the 
 # entries below.
 ###############################################################################
@@ -61,3 +61,77 @@
 #*.PDF   diff=astextplain
 #*.rtf   diff=astextplain
 #*.RTF   diff=astextplain
+
+###############################################################################
+# XPTabBand 项目特定规则
+###############################################################################
+
+# Windows 源码统一使用 CRLF 行尾（VS 默认）
+*.cpp     text eol=crlf working-tree-encoding=UTF-8-BOM
+*.h       text eol=crlf working-tree-encoding=UTF-8-BOM
+*.hpp     text eol=crlf working-tree-encoding=UTF-8-BOM
+*.c       text eol=crlf working-tree-encoding=UTF-8-BOM
+*.cc      text eol=crlf working-tree-encoding=UTF-8-BOM
+
+# 模块定义文件
+*.def     text eol=crlf
+
+# 批处理 / PowerShell / Inno Setup 脚本统一 CRLF
+*.bat     text eol=crlf working-tree-encoding=UTF-8-BOM
+*.cmd     text eol=crlf
+*.ps1     text eol=crlf working-tree-encoding=UTF-8-BOM
+*.iss     text eol=crlf working-tree-encoding=UTF-8-BOM
+
+# Markdown / 文档（保留行尾，让跨平台编辑友好）
+*.md      text eol=auto
+*.txt     text eol=auto
+
+# YAML 配置文件用 LF（GitHub Actions 推荐跨平台一致）
+*.yml     text eol=lf
+*.yaml    text eol=lf
+
+# JSON 配置
+*.json    text eol=lf
+
+# EditorConfig 自身
+.editorconfig  text eol=lf
+
+# 二进制文件（不要做行尾转换，不要 diff）
+*.dll     binary
+*.exe     binary
+*.pdb     binary
+*.lib     binary
+*.exp     binary
+*.ilk     binary
+*.ipdb    binary
+*.iobj    binary
+*.obj     binary
+*.res     binary
+
+# 图片与图标
+*.png     binary
+*.jpg     binary
+*.jpeg    binary
+*.gif     binary
+*.ico     binary
+*.bmp     binary
+*.svg     text eol=lf
+
+# Visual Studio 项目文件作为 binary 处理（避免合并时插入冲突标记导致文件无法加载）
+*.sln            binary
+*.vcxproj        binary
+*.vcxproj.filters binary
+*.vcproj         binary
+*.props          binary
+*.targets        binary
+*.user           binary
+
+# Windows Installer 产物
+*.msi     binary
+*.msm     binary
+
+# 调试 dump
+*.dmp     binary
+
+# 锁文件保持 LF
+*.lock    text eol=lf

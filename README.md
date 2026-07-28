@@ -27,6 +27,7 @@
 - [已知限制](#已知限制)
 - [常见问题](#常见问题)
 - [贡献](#贡献)
+- [社区文档](#社区文档)
 - [开发历程](#开发历程)
 - [致谢](#致谢)
 - [License](#license)
@@ -185,6 +186,8 @@ cd XPTabCpp\installer
 
 ## 常见问题
 
+> 更完整的 Q&A 见 [docs/FAQ.md](docs/FAQ.md)；遇到具体问题先按 [docs/troubleshooting.md](docs/troubleshooting.md) 收集诊断信息。
+
 ### Q1：看不到标签栏？
 
 1. 确认在"查看 → 工具栏"中勾选了 XPTabBand
@@ -218,18 +221,35 @@ cd XPTabCpp\installer
 
 ## 贡献
 
-欢迎提交 Issue 和 Pull Request！
+欢迎提交 Issue 和 Pull Request！参与前请阅读 [贡献指南](CONTRIBUTING.md) 和 [行为准则](CODE_OF_CONDUCT.md)。
 
 - 报告 Bug：[提交 Issue](https://github.com/xp7777/XPTabBand/issues/new/choose)
 - 贡献代码：[贡献指南](CONTRIBUTING.md)
 - 版本变更：[CHANGELOG.md](CHANGELOG.md)
 - 架构文档：[docs/architecture.md](docs/architecture.md)
+- 开发指南：[docs/development.md](docs/development.md)
+- 发布流程（维护者）：[docs/release.md](docs/release.md)
 
 ### 贡献者
 
 <a href="https://github.com/xp7777/XPTabBand/graphs/contributors">
   <img src="https://contrib.rocks/image?repo=xp7777/XPTabBand" />
 </a>
+
+## 社区文档
+
+| 文档 | 说明 |
+| ---- | ---- |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | 贡献指南：如何提交 Issue、PR、commit 规范 |
+| [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | 行为准则：参与社区的礼仪规范 |
+| [SECURITY.md](SECURITY.md) | 安全策略：如何报告安全漏洞 |
+| [SUPPORT.md](SUPPORT.md) | 获取支持：问题求助渠道 |
+| [docs/FAQ.md](docs/FAQ.md) | 常见问题详解 |
+| [docs/troubleshooting.md](docs/troubleshooting.md) | 故障排查指南（含诊断脚本） |
+| [docs/development.md](docs/development.md) | 开发指南：环境搭建、调试技巧、代码规范 |
+| [docs/architecture.md](docs/architecture.md) | 技术架构和关键设计决策 |
+| [docs/release.md](docs/release.md) | 版本发布流程（维护者） |
+| [docs/screenshots.md](docs/screenshots.md) | 截图规范 |
 
 ## 开发历程
 
